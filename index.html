@@ -1,0 +1,2429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>SYMMETRA — Facial Symmetry Analyzer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&family=Playfair+Display:wght@600&display=swap" rel="stylesheet"/>
+
+<!-- MediaPipe via unpkg — stable versions that actually work -->
+<script src="https://unpkg.com/@mediapipe/face_mesh@0.4.1633559619/face_mesh.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@mediapipe/camera_utils@0.3.1632090844/camera_utils.js" crossorigin="anonymous"></script>
+
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #07090F;
+  --bg2:       #0D1117;
+  --surface:   #111827;
+  --card:      #141C2B;
+  --card2:     #1A2235;
+  --border:    #1E2D45;
+  --border2:   #243352;
+
+  --gold:      #C9A84C;
+  --gold2:     #E8C97A;
+  --gold-dim:  rgba(201,168,76,0.15);
+  --gold-glow: rgba(201,168,76,0.3);
+
+  --cyan:      #22D3EE;
+  --cyan-dim:  rgba(34,211,238,0.12);
+  --cyan-glow: rgba(34,211,238,0.25);
+
+  --violet:    #818CF8;
+  --violet-dim:rgba(129,140,248,0.12);
+
+  --green:     #34D399;
+  --green-dim: rgba(52,211,153,0.12);
+  --amber:     #FBBF24;
+  --amber-dim: rgba(251,191,36,0.12);
+  --red:       #F87171;
+  --red-dim:   rgba(248,113,113,0.12);
+
+  --text:      #F1F5F9;
+  --text2:     #CBD5E1;
+  --muted:     #64748B;
+  --dim:       #94A3B8;
+}
+
+html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; }
+
+/* ─── Noise texture overlay ─── */
+body::after {
+  content: '';
+  position: fixed; inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+  pointer-events: none; z-index: 1000; opacity: 0.4;
+}
+
+/* ─── App Grid ─── */
+#app {
+  display: grid;
+  grid-template-columns: 1fr 420px;
+  grid-template-rows: 60px 1fr;
+  height: 100vh;
+}
+
+/* ─── Header ─── */
+header {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 28px;
+  background: rgba(7,9,15,0.95);
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(20px);
+  position: relative; z-index: 50;
+}
+
+.logo-wrap { display: flex; align-items: center; gap: 12px; }
+
+.logo-mark {
+  width: 30px; height: 30px;
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+}
+.logo-mark svg { position: absolute; }
+.logo-mark .spin { animation: rotateSlow 8s linear infinite; }
+@keyframes rotateSlow { to { transform: rotate(360deg); } }
+
+.logo-text {
+  font-family: 'Playfair Display', serif;
+  font-size: 17px; font-weight: 600;
+  letter-spacing: 0.18em;
+  background: linear-gradient(135deg, var(--gold2) 0%, var(--gold) 60%, #A07832 100%);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+
+.logo-sub { font-size: 9px; letter-spacing: 0.22em; color: var(--muted); text-transform: uppercase; margin-top: -2px; }
+
+.header-right { display: flex; align-items: center; gap: 24px; }
+
+.status-pill {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-family: 'DM Mono', monospace;
+  font-size: 10px; letter-spacing: 0.08em;
+  color: var(--muted);
+  transition: all 0.3s;
+}
+.status-pill.on { border-color: rgba(52,211,153,0.35); background: rgba(52,211,153,0.06); color: var(--green); }
+.status-pill.tracking { border-color: rgba(34,211,238,0.35); background: rgba(34,211,238,0.06); color: var(--cyan); }
+
+.dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--muted);
+  flex-shrink: 0;
+}
+.dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.dot.tracking { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); animation: blink 2s ease-in-out infinite; }
+.dot.warning { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+.fps-tag {
+  font-family: 'DM Mono', monospace; font-size: 10px;
+  color: var(--muted); letter-spacing: 0.06em;
+}
+
+/* ─── Camera Panel ─── */
+#cam-panel {
+  position: relative;
+  background: radial-gradient(ellipse at 50% 30%, #0C1424 0%, #07090F 70%);
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+}
+
+/* Ambient corner glows */
+#cam-panel::before {
+  content: '';
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(ellipse 400px 300px at 0% 0%, rgba(129,140,248,0.04) 0%, transparent 70%),
+    radial-gradient(ellipse 400px 300px at 100% 100%, rgba(201,168,76,0.04) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+#video {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+  opacity: 0;
+  transition: opacity 0.8s ease;
+}
+#video.show { opacity: 1; }
+
+/* Two canvases: mesh (mirrored), UI labels (not mirrored) */
+#mesh-canvas {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  transform: scaleX(-1);
+  pointer-events: none;
+}
+#hud-canvas {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+}
+
+/* ─── Idle State ─── */
+#idle {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 20px;
+  transition: opacity 0.5s, visibility 0.5s;
+  z-index: 5;
+}
+#idle.gone { opacity: 0; visibility: hidden; }
+
+.idle-circle {
+  width: 90px; height: 90px;
+  border-radius: 50%;
+  border: 1px solid var(--border2);
+  display: flex; align-items: center; justify-content: center;
+  position: relative;
+}
+.idle-circle::before {
+  content: ''; position: absolute; inset: -5px;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  border-top-color: var(--gold);
+  border-right-color: rgba(201,168,76,0.3);
+  animation: rotateSlow 4s linear infinite;
+}
+.idle-circle::after {
+  content: ''; position: absolute; inset: -12px;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  border-bottom-color: rgba(201,168,76,0.15);
+  animation: rotateSlow 8s linear infinite reverse;
+}
+.idle-icon { color: var(--muted); }
+
+.idle-title { font-size: 14px; font-weight: 500; color: var(--dim); letter-spacing: 0.04em; }
+.idle-sub { font-size: 11px; color: var(--muted); text-align: center; line-height: 1.7; max-width: 240px; }
+
+/* ─── Filter Bar ─── */
+#filter-bar {
+  position: absolute; top: 16px; left: 16px;
+  display: flex; gap: 6px; z-index: 20;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.4s;
+}
+#filter-bar.show { opacity: 1; pointer-events: all; }
+
+.fchip {
+  padding: 5px 13px; border-radius: 20px;
+  border: 1px solid var(--border2);
+  background: rgba(7,9,15,0.8);
+  backdrop-filter: blur(12px);
+  font-size: 9px; font-weight: 600;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--muted); cursor: pointer;
+  transition: all 0.2s;
+}
+.fchip:hover { border-color: var(--dim); color: var(--text2); }
+.fchip.active { border-color: var(--gold); color: var(--gold); background: var(--gold-dim); }
+
+/* ─── Control Bar ─── */
+#ctrl-bar {
+  position: absolute; bottom: 20px; left: 50%;
+  transform: translateX(-50%);
+  display: flex; gap: 10px; z-index: 20;
+}
+
+.btn {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 20px; border-radius: 8px;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  cursor: pointer; border: 1px solid var(--border2);
+  background: rgba(13,17,23,0.92);
+  color: var(--dim);
+  backdrop-filter: blur(16px);
+  transition: all 0.25s;
+}
+.btn:hover { border-color: var(--dim); color: var(--text); }
+
+.btn-primary {
+  border-color: var(--gold);
+  color: var(--gold);
+  background: var(--gold-dim);
+}
+.btn-primary:hover {
+  background: rgba(201,168,76,0.22);
+  box-shadow: 0 0 24px var(--gold-glow), 0 0 60px rgba(201,168,76,0.08);
+}
+
+.btn-stop {
+  border-color: rgba(248,113,113,0.4);
+  color: var(--red);
+  background: var(--red-dim);
+}
+.btn-stop:hover { background: rgba(248,113,113,0.2); }
+
+.btn-snap { display: none; }
+.btn-snap.show { display: flex; }
+
+/* ─── Corner brackets ─── */
+.bracket {
+  position: absolute; width: 20px; height: 20px;
+  border-color: var(--gold); border-style: solid;
+  opacity: 0; transition: opacity 0.5s;
+}
+.bracket.show { opacity: 0.5; }
+.bracket-tl { top: 16px; left: 16px; border-width: 1px 0 0 1px; }
+.bracket-tr { top: 16px; right: 16px; border-width: 1px 1px 0 0; }
+.bracket-bl { bottom: 52px; left: 16px; border-width: 0 0 1px 1px; }
+.bracket-br { bottom: 52px; right: 16px; border-width: 0 1px 1px 0; }
+
+/* ─── Data Panel ─── */
+#data-panel {
+  overflow-y: auto; overflow-x: hidden;
+  padding: 16px 16px 20px;
+  display: flex; flex-direction: column; gap: 10px;
+  scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  background: var(--bg2);
+}
+#data-panel::-webkit-scrollbar { width: 3px; }
+#data-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* ─── Cards ─── */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  transition: border-color 0.3s;
+  position: relative; overflow: hidden;
+}
+.card::before {
+  content: ''; position: absolute;
+  top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent 0%, var(--border2) 40%, var(--border2) 60%, transparent 100%);
+}
+
+.card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px;
+}
+.card-label {
+  font-size: 9px; font-weight: 600;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--muted);
+  display: flex; align-items: center; gap: 8px;
+}
+.card-label::before {
+  content: ''; width: 3px; height: 10px;
+  background: var(--gold); border-radius: 2px; flex-shrink: 0;
+  box-shadow: 0 0 6px var(--gold);
+}
+
+/* ─── Score Card ─── */
+.score-ring-wrap {
+  display: flex; align-items: center; gap: 20px;
+}
+.score-ring {
+  width: 80px; height: 80px; flex-shrink: 0; position: relative;
+}
+.score-ring svg { transform: rotate(-90deg); }
+
+.score-ring-text {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.score-num {
+  font-family: 'DM Mono', monospace;
+  font-size: 20px; font-weight: 500; line-height: 1;
+}
+.score-unit { font-size: 8px; color: var(--muted); letter-spacing: 0.1em; margin-top: 2px; }
+
+.score-info { flex: 1; }
+.score-verdict {
+  font-family: 'Playfair Display', serif;
+  font-size: 16px; font-weight: 600; line-height: 1.2;
+  margin-bottom: 5px;
+  color: var(--text);
+}
+.score-note { font-size: 10px; color: var(--muted); line-height: 1.6; }
+
+/* ─── Severity Badge ─── */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 4px;
+  font-size: 8px; font-weight: 700;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  margin-top: 8px;
+}
+.badge-none   { background: var(--green-dim); color: var(--green); border: 1px solid rgba(52,211,153,0.2); }
+.badge-mild   { background: var(--cyan-dim);  color: var(--cyan);  border: 1px solid rgba(34,211,238,0.2); }
+.badge-mod    { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(251,191,36,0.2); }
+.badge-severe { background: var(--red-dim);   color: var(--red);   border: 1px solid rgba(248,113,113,0.2); }
+
+/* ─── Metric Rows ─── */
+.mrow {
+  display: flex; align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(30,45,69,0.5);
+  gap: 8px;
+}
+.mrow:last-child { border-bottom: none; }
+.mrow-name { font-size: 10px; color: var(--dim); flex: 1; min-width: 0; }
+.mrow-vals {
+  display: flex; align-items: center; gap: 7px;
+  font-family: 'DM Mono', monospace; font-size: 10px;
+  flex-shrink: 0;
+}
+.v-l { color: var(--cyan); }
+.v-r { color: var(--violet); }
+.v-div { color: var(--border2); font-size: 8px; }
+.v-d { font-size: 9px; color: var(--muted); }
+.v-d.flag { color: var(--amber); }
+.v-d.alert { color: var(--red); }
+
+/* ─── Bar Compare ─── */
+.bars { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
+.bar-row { display: flex; align-items: center; gap: 8px; }
+.bar-lbl { width: 10px; font-size: 9px; font-family: 'DM Mono', monospace; color: var(--muted); flex-shrink: 0; }
+.bar-track {
+  flex: 1; height: 4px;
+  background: rgba(30,45,69,0.8);
+  border-radius: 2px; overflow: hidden;
+}
+.bar-fill {
+  height: 100%; border-radius: 2px;
+  transition: width 0.5s cubic-bezier(.4,0,.2,1);
+}
+.bar-val { font-family: 'DM Mono', monospace; font-size: 9px; width: 40px; flex-shrink: 0; }
+
+/* ─── Cause Tags ─── */
+.cause-item {
+  display: flex; gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(30,45,69,0.5);
+  font-size: 10px; color: var(--dim); line-height: 1.65;
+}
+.cause-item:last-child { border-bottom: none; }
+.cause-icon { font-size: 15px; flex-shrink: 0; margin-top: 1px; }
+
+/* ─── Routine Steps ─── */
+.step {
+  display: flex; gap: 14px;
+  padding: 11px 0;
+  border-bottom: 1px solid rgba(30,45,69,0.5);
+}
+.step:last-child { border-bottom: none; }
+.step-num {
+  width: 24px; height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--border2);
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'DM Mono', monospace; font-size: 9px;
+  color: var(--gold); flex-shrink: 0;
+  background: var(--gold-dim);
+}
+.step-body { flex: 1; }
+.step-title { font-size: 11px; font-weight: 600; color: var(--text2); margin-bottom: 3px; }
+.step-desc { font-size: 10px; color: var(--muted); line-height: 1.6; }
+.step-timer {
+  font-family: 'DM Mono', monospace; font-size: 9px;
+  color: var(--cyan); margin-top: 5px; letter-spacing: 0.05em;
+}
+
+/* ─── Groom Items ─── */
+.gitem {
+  display: flex; gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(30,45,69,0.5);
+  font-size: 10px; color: var(--muted); line-height: 1.65;
+}
+.gitem:last-child { border-bottom: none; }
+.gitem-icon { flex-shrink: 0; font-size: 14px; }
+
+/* ─── Waiting / Empty ─── */
+.empty {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 8px; padding: 24px 0;
+  color: var(--muted); font-size: 11px; text-align: center;
+}
+.shimmer-bar {
+  width: 100%; height: 2px;
+  background: var(--border); border-radius: 1px;
+  overflow: hidden; margin-bottom: 4px;
+}
+.shimmer-fill {
+  height: 100%; width: 40%;
+  background: linear-gradient(90deg, transparent, var(--gold), transparent);
+  animation: shim 1.8s ease-in-out infinite;
+}
+@keyframes shim { 0% { transform:translateX(-200%); } 100% { transform:translateX(600%); } }
+
+/* ─── Divider ─── */
+.divider {
+  height: 1px; background: var(--border); margin: 2px 0;
+}
+
+/* ─── Dominant Side Detector ─── */
+.dom-wrap {
+  display: flex; flex-direction: column; gap: 12px;
+}
+.dom-calibrating {
+  display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 16px 0;
+}
+.dom-progress-ring { position: relative; width: 64px; height: 64px; flex-shrink: 0; }
+.dom-progress-ring svg { transform: rotate(-90deg); }
+.dom-ring-pct {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'DM Mono', monospace; font-size: 11px; color: var(--gold);
+}
+.dom-cal-label { font-size: 10px; color: var(--muted); text-align: center; line-height: 1.6; }
+
+.dom-result {
+  display: flex; flex-direction: column; gap: 10px;
+}
+.dom-side-wrap {
+  display: flex; gap: 10px; align-items: stretch;
+}
+.dom-side-card {
+  flex: 1; border-radius: 8px; padding: 12px;
+  border: 1px solid var(--border); background: var(--card2);
+  display: flex; flex-direction: column; gap: 4px;
+  transition: all 0.4s;
+}
+.dom-side-card.dominant {
+  border-color: var(--gold);
+  background: var(--gold-dim);
+  box-shadow: 0 0 20px rgba(201,168,76,0.08);
+}
+.dom-side-label {
+  font-size: 8px; font-weight: 700; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--muted);
+}
+.dom-side-card.dominant .dom-side-label { color: var(--gold); }
+.dom-side-name {
+  font-family: 'Playfair Display', serif;
+  font-size: 18px; font-weight: 600; color: var(--text);
+  line-height: 1;
+}
+.dom-side-score {
+  font-family: 'DM Mono', monospace;
+  font-size: 11px; color: var(--dim); margin-top: 2px;
+}
+.dom-side-card.dominant .dom-side-score { color: var(--gold2); }
+
+.dom-activity-bars { display: flex; flex-direction: column; gap: 6px; }
+.dom-act-row { display: flex; align-items: center; gap: 8px; }
+.dom-act-name { font-size: 9px; color: var(--muted); width: 80px; flex-shrink: 0; }
+.dom-act-track { flex: 1; height: 4px; background: rgba(30,45,69,0.8); border-radius: 2px; overflow: hidden; }
+.dom-act-fill { height: 100%; border-radius: 2px; transition: width 0.6s cubic-bezier(.4,0,.2,1); }
+.dom-act-vals {
+  display: flex; gap: 6px;
+  font-family: 'DM Mono', monospace; font-size: 9px;
+  width: 70px; flex-shrink: 0;
+}
+
+.dom-insight {
+  background: var(--card2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px;
+  font-size: 10px; color: var(--dim); line-height: 1.65;
+}
+.dom-insight strong { color: var(--text2); }
+
+.dom-recal-btn {
+  align-self: flex-start;
+  padding: 5px 12px; border-radius: 6px;
+  border: 1px solid var(--border2); background: transparent;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 9px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--muted); cursor: pointer;
+  transition: all 0.2s;
+}
+.dom-recal-btn:hover { border-color: var(--gold); color: var(--gold); }
+
+/* ─── Head Pose / Posture ─── */
+.pose-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px;
+}
+.pose-tile {
+  background: var(--card2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px;
+}
+.pose-tile-label { font-size: 8px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+.pose-tile-val {
+  font-family: 'DM Mono', monospace; font-size: 16px; font-weight: 500;
+  line-height: 1;
+}
+.pose-tile-unit { font-size: 9px; color: var(--muted); margin-top: 2px; }
+.pose-ok   { color: var(--green); }
+.pose-warn { color: var(--amber); }
+.pose-bad  { color: var(--red); }
+
+.pose-bar-section { margin-bottom: 10px; }
+.pose-bar-label {
+  font-size: 9px; color: var(--muted); margin-bottom: 5px;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.pose-bar-track { height: 5px; background: rgba(30,45,69,0.8); border-radius: 3px; overflow: hidden; }
+.pose-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s cubic-bezier(.4,0,.2,1); }
+
+.pose-link-wrap { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
+.pose-link-item {
+  display: flex; gap: 10px; align-items: flex-start;
+  background: var(--card2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 9px 11px;
+  font-size: 10px; color: var(--dim); line-height: 1.6;
+}
+.pose-link-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+.pose-alert-banner {
+  display: flex; gap: 8px; align-items: center;
+  padding: 8px 12px; border-radius: 8px;
+  background: var(--red-dim); border: 1px solid rgba(248,113,113,0.2);
+  font-size: 10px; color: var(--red); margin-bottom: 8px;
+  line-height: 1.5;
+}
+.pose-warn-banner {
+  display: flex; gap: 8px; align-items: center;
+  padding: 8px 12px; border-radius: 8px;
+  background: var(--amber-dim); border: 1px solid rgba(251,191,36,0.2);
+  font-size: 10px; color: var(--amber); margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+/* ─── Pose Diagram on HUD canvas ─── */
+/* drawn via JS */
+
+/* ─── Recalibrate pulse ─── */
+@keyframes calPulse {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+.calibrating-pulse { animation: calPulse 1.2s ease-in-out infinite; }
+
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- ════ HEADER ════ -->
+<header>
+  <div class="logo-wrap">
+    <div class="logo-mark">
+      <!-- Outer spinning ring -->
+      <svg class="spin" width="30" height="30" viewBox="0 0 30 30" fill="none">
+        <circle cx="15" cy="15" r="13" stroke="url(#gr1)" stroke-width="0.8" stroke-dasharray="3 5"/>
+        <defs>
+          <linearGradient id="gr1" x1="0" y1="0" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#C9A84C"/>
+            <stop offset="100%" stop-color="transparent"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <!-- Inner static circle -->
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+        <circle cx="9" cy="9" r="8" stroke="#C9A84C" stroke-width="0.8" opacity="0.6"/>
+        <circle cx="9" cy="9" r="3" fill="#C9A84C" opacity="0.8"/>
+      </svg>
+    </div>
+    <div>
+      <div class="logo-text">SYMMETRA</div>
+      <div class="logo-sub">Facial Analysis Engine</div>
+    </div>
+  </div>
+
+  <div class="header-right">
+    <span class="fps-tag" id="fps">-- FPS</span>
+    <div class="status-pill" id="pill-cam">
+      <div class="dot" id="dot-cam"></div>
+      <span id="txt-cam">OFFLINE</span>
+    </div>
+    <div class="status-pill" id="pill-track">
+      <div class="dot" id="dot-track"></div>
+      <span id="txt-track">NO FACE</span>
+    </div>
+  </div>
+</header>
+
+<!-- ════ CAMERA PANEL ════ -->
+<div id="cam-panel">
+
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="mesh-canvas"></canvas>
+  <canvas id="hud-canvas"></canvas>
+
+  <!-- Corner brackets (appear when tracking) -->
+  <div class="bracket bracket-tl" id="br-tl"></div>
+  <div class="bracket bracket-tr" id="br-tr"></div>
+  <div class="bracket bracket-bl" id="br-bl"></div>
+  <div class="bracket bracket-br" id="br-br"></div>
+
+  <!-- Idle screen -->
+  <div id="idle">
+    <div class="idle-circle">
+      <svg class="idle-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+        <circle cx="12" cy="8" r="4"/>
+        <ellipse cx="12" cy="9" rx="3" ry="3.5" stroke-opacity="0.4"/>
+        <path d="M3 21c0-4.97 4.03-9 9-9s9 4.03 9 9" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <p class="idle-title">Center your face in frame</p>
+    <p class="idle-sub">Ensure even frontal lighting<br/>Keep head upright and neutral</p>
+  </div>
+
+  <!-- Filter bar -->
+  <div id="filter-bar">
+    <div class="fchip active" data-f="mesh" onclick="setFilter('mesh')">MESH</div>
+    <div class="fchip" data-f="grid" onclick="setFilter('grid')">GRID</div>
+    <div class="fchip" data-f="h1"   onclick="setFilter('h1')">HAIR I</div>
+    <div class="fchip" data-f="h2"   onclick="setFilter('h2')">HAIR II</div>
+    <div class="fchip" data-f="h3"   onclick="setFilter('h3')">HAIR III</div>
+  </div>
+
+  <!-- Controls -->
+  <div id="ctrl-bar">
+    <button class="btn btn-primary" id="btn-cam" onclick="toggleCam()">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+        <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/>
+      </svg>
+      ACTIVATE CAMERA
+    </button>
+    <button class="btn btn-snap" id="btn-snap" onclick="doSnap()">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3.5"/>
+        <path d="M9 2H6a2 2 0 00-2 2v3M15 2h3a2 2 0 012 2v3M9 22H6a2 2 0 01-2-2v-3M15 22h3a2 2 0 002-2v-3"/>
+      </svg>
+      CAPTURE
+    </button>
+  </div>
+</div>
+
+<!-- ════ DATA PANEL ════ -->
+<div id="data-panel">
+
+  <!-- Score -->
+  <div class="card">
+    <div class="card-head"><div class="card-label">Symmetry Score</div></div>
+    <div class="score-ring-wrap">
+      <div class="score-ring">
+        <svg width="80" height="80" viewBox="0 0 80 80">
+          <circle cx="40" cy="40" r="34" fill="none" stroke="var(--border)" stroke-width="4"/>
+          <circle id="score-arc" cx="40" cy="40" r="34" fill="none"
+            stroke="var(--cyan)" stroke-width="4" stroke-linecap="round"
+            stroke-dasharray="213.6" stroke-dashoffset="213.6"
+            style="transition:stroke-dashoffset 0.7s cubic-bezier(.4,0,.2,1),stroke 0.4s"/>
+        </svg>
+        <div class="score-ring-text">
+          <div class="score-num" id="score-num" style="color:var(--cyan)">--</div>
+          <div class="score-unit">SCORE</div>
+        </div>
+      </div>
+      <div class="score-info">
+        <div class="score-verdict" id="score-verdict">Awaiting<br/>Analysis</div>
+        <div class="score-note" id="score-note">Activate camera and position your face in frame</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Eyes -->
+  <div class="card">
+    <div class="card-head"><div class="card-label">Eye Analysis</div></div>
+    <div id="eye-body"><div class="shimmer-bar"><div class="shimmer-fill"></div></div><div class="empty">No face in frame</div></div>
+  </div>
+
+  <!-- Brows -->
+  <div class="card">
+    <div class="card-head"><div class="card-label">Eyebrow Analysis</div></div>
+    <div id="brow-body"><div class="shimmer-bar"><div class="shimmer-fill"></div></div><div class="empty">No face in frame</div></div>
+  </div>
+
+  <!-- Geometry -->
+  <div class="card">
+    <div class="card-head"><div class="card-label">Facial Geometry</div></div>
+    <div id="geo-body"><div class="shimmer-bar"><div class="shimmer-fill"></div></div><div class="empty">No face in frame</div></div>
+  </div>
+
+  <!-- Causes -->
+  <div class="card">
+    <div class="card-head"><div class="card-label">Symmetry Factors</div></div>
+    <div id="cause-body"><div class="empty">Capture a face to view suggestions</div></div>
+  </div>
+
+  <!-- Routine -->
+  <div class="card">
+    <div class="card-head"><div class="card-label">Balance Routine</div></div>
+    <div id="routine-body"><div class="empty">Capture a face to view suggestions</div></div>
+  </div>
+
+  <!-- Grooming -->
+  <div class="card">
+    <div class="card-head"><div class="card-label">Presentation Tips</div></div>
+    <div id="groom-body"><div class="empty">Capture a face to view suggestions</div></div>
+  </div>
+
+  <!-- ── FEATURE 3: Dominant Side Detector ── -->
+  <div class="card">
+    <div class="card-head">
+      <div class="card-label">Dominant Side Detector</div>
+      <span id="dom-badge" style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:0.06em">PASSIVE SCAN</span>
+    </div>
+    <div id="dom-body">
+      <div class="empty">Activate camera to begin passive scan</div>
+    </div>
+  </div>
+
+  <!-- ── FEATURE 4: Posture-to-Face Correlation ── -->
+  <div class="card">
+    <div class="card-head">
+      <div class="card-label">Posture–Face Correlation</div>
+      <span id="pose-badge" style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:0.06em">HEAD POSE</span>
+    </div>
+    <div id="pose-body">
+      <div class="empty">Activate camera to analyze</div>
+    </div>
+  </div>
+
+</div><!-- /data-panel -->
+</div><!-- /app -->
+
+<script>
+// ══════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════
+const S = {
+  on: false,
+  tracking: false,
+  stream: null,
+  mp: null,
+  mpCam: null,
+  filter: 'mesh',
+  lmData: null,
+  frameN: 0,
+  fpsT: performance.now(),
+  fps: 0,
+
+  // ── Feature 3: Dominant Side Detector ──
+  dom: {
+    collecting: false,
+    done: false,
+    frames: [],           // array of {lx, rx, ly, ry, lBrow, rBrow, lMouth, rMouth}
+    TARGET_FRAMES: 180,   // ~6 seconds at 30fps
+    result: null,         // { dominantSide, leftScore, rightScore, breakdown }
+  },
+
+  // ── Feature 4: Posture ──
+  pose: {
+    smoothYaw: 0,
+    smoothPitch: 0,
+    smoothRoll: 0,
+    smoothFHP: 0,   // forward head proxy
+    smoothTilt: 0,
+    frameCount: 0,
+    ALPHA: 0.12,    // EMA smoothing
+  },
+};
+
+const VIDEO   = document.getElementById('video');
+const MESH_C  = document.getElementById('mesh-canvas');
+const HUD_C   = document.getElementById('hud-canvas');
+const PANEL   = document.getElementById('cam-panel');
+
+// ══════════════════════════════════════
+//  LANDMARK INDICES  (MediaPipe 468-pt + iris 468-477)
+// ══════════════════════════════════════
+const IDX = {
+  // Left eye (screen left = anatomical right)
+  LE_IN:362, LE_OUT:263, LE_TOP:386, LE_BOT:374,
+  // Right eye
+  RE_IN:133, RE_OUT:33, RE_TOP:159, RE_BOT:145,
+  // Iris (refined landmarks)
+  L_IRIS:468, R_IRIS:473,
+  // Left brow
+  LB_IN:336, LB_MID:296, LB_PEAK:334, LB_OUT:300,
+  // Right brow
+  RB_IN:107, RB_MID:66, RB_PEAK:105, RB_OUT:70,
+  // Face
+  NOSE:4, NOSE_TIP:1, FOREHEAD:10, CHIN:152,
+  L_CHEEK:234, R_CHEEK:454,
+  L_JAW:172, R_JAW:397,
+  L_MOUTH:61, R_MOUTH:291,
+  UPPER_LIP:13, LOWER_LIP:14,
+  // Posture / head pose anchors
+  L_EAR:234,  R_EAR:454,
+  L_TEMPLE:162, R_TEMPLE:389,
+  // Mouth corners for micro-expression tracking
+  L_MOUTH_CORNER:61, R_MOUTH_CORNER:291,
+  // Zygoma for cheek movement
+  L_ZYGO:205, R_ZYGO:425,
+  // Nose bridge for roll reference
+  NOSE_BRIDGE:6,
+  // 3D head pose landmarks
+  P3D_NOSE:   1,
+  P3D_CHIN:   152,
+  P3D_L_EYE:  263,
+  P3D_R_EYE:  33,
+  P3D_L_MOUTH:61,
+  P3D_R_MOUTH:291,
+};
+
+// ══════════════════════════════════════
+//  CANVAS RESIZE
+// ══════════════════════════════════════
+function resizeCanvases() {
+  const w = PANEL.clientWidth, h = PANEL.clientHeight;
+  [MESH_C, HUD_C].forEach(c => { c.width = w; c.height = h; });
+}
+window.addEventListener('resize', resizeCanvases);
+resizeCanvases();
+
+// ══════════════════════════════════════
+//  CAMERA LIFECYCLE
+// ══════════════════════════════════════
+async function startCam() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width:{ideal:1280}, height:{ideal:720}, facingMode:'user' }
+    });
+    S.stream = stream;
+    VIDEO.srcObject = stream;
+    await VIDEO.play();
+    VIDEO.classList.add('show');
+    S.on = true;
+    setCamUI(true);
+    initMediaPipe();
+  } catch(e) {
+    console.error('Camera:', e);
+    alert('Camera access denied. Please allow camera permissions and reload.');
+  }
+}
+
+function stopCam() {
+  // Kill MediaPipe camera utility
+  if (S.mpCam) { try { S.mpCam.stop(); } catch(e){} S.mpCam = null; }
+  // Stop all stream tracks — this kills the webcam indicator light
+  if (S.stream) {
+    S.stream.getTracks().forEach(t => { t.stop(); });
+    S.stream = null;
+  }
+  VIDEO.srcObject = null;
+  VIDEO.classList.remove('show');
+  S.on = false;
+  S.tracking = false;
+  S.lmData = null;
+
+  clearCanvases();
+  setCamUI(false);
+  setTrackUI(false);
+  resetCards();
+  document.getElementById('btn-snap').classList.remove('show');
+  document.getElementById('filter-bar').classList.remove('show');
+  document.getElementById('idle').classList.remove('gone');
+  setBrackets(false);
+  document.getElementById('fps').textContent = '-- FPS';
+}
+
+function toggleCam() {
+  S.on ? stopCam() : startCam();
+}
+window.toggleCam = toggleCam;
+
+window.addEventListener('beforeunload', () => {
+  if (S.stream) S.stream.getTracks().forEach(t => t.stop());
+});
+
+// ══════════════════════════════════════
+//  MEDIAPIPE INIT
+// ══════════════════════════════════════
+function initMediaPipe() {
+  // Create FaceMesh instance
+  const fm = new FaceMesh({ locateFile: f =>
+    `https://unpkg.com/@mediapipe/face_mesh@0.4.1633559619/${f}`
+  });
+
+  fm.setOptions({
+    maxNumFaces: 1,
+    refineLandmarks: true,         // enables iris landmarks 468-477
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+  });
+
+  fm.onResults(handleResults);
+  S.mp = fm;
+
+  // Use MediaPipe Camera util — it drives requestAnimationFrame for us
+  const cam = new Camera(VIDEO, {
+    onFrame: async () => {
+      if (!S.on || !S.mp) return;
+      await S.mp.send({ image: VIDEO });
+
+      // FPS counter
+      S.frameN++;
+      const now = performance.now();
+      if (now - S.fpsT >= 1000) {
+        S.fps = S.frameN;
+        S.frameN = 0;
+        S.fpsT = now;
+        document.getElementById('fps').textContent = S.fps + ' FPS';
+      }
+    },
+    width: 1280, height: 720,
+  });
+  cam.start();
+  S.mpCam = cam;
+
+  document.getElementById('btn-snap').classList.add('show');
+  document.getElementById('filter-bar').classList.add('show');
+}
+
+// ══════════════════════════════════════
+//  RESULTS HANDLER
+// ══════════════════════════════════════
+function handleResults(results) {
+  clearCanvases();
+
+  if (!results.multiFaceLandmarks || !results.multiFaceLandmarks.length) {
+    if (S.tracking) {
+      S.tracking = false;
+      setTrackUI(false);
+      resetCards();
+      setBrackets(false);
+    }
+    return;
+  }
+
+  if (!S.tracking) {
+    S.tracking = true;
+    setTrackUI(true);
+    document.getElementById('idle').classList.add('gone');
+    setBrackets(true);
+  }
+
+  const lm = results.multiFaceLandmarks[0];
+  S.lmData = lm;
+
+  const W = MESH_C.width, H = MESH_C.height;
+  const mCtx = MESH_C.getContext('2d');
+  const hCtx = HUD_C.getContext('2d');
+
+  drawMesh(mCtx, lm, W, H);
+
+  // ── Fix 1+2+4+5+6: 3D-normalised metrics ──
+  const pose3d = calculate3DNormalization(lm);
+  const data   = computeMetrics(lm, W, H, pose3d);
+  if (data) TelemetryBuffer.initialized = true;
+
+  // ── Feature 3: dominant side passive scan ──
+  collectDominantFrame(lm, W, H);
+
+  // ── Feature 4: smoothed head pose for UI ──
+  const poseData = computeHeadPose(lm, W, H);
+
+  drawHud(hCtx, data, poseData, W, H);
+
+  updateAllCards(data);
+  updateDomCard();
+  updatePoseCard(poseData, data);
+}
+
+// ══════════════════════════════════════
+//  CANVAS DRAWING
+// ══════════════════════════════════════
+function clearCanvases() {
+  MESH_C.getContext('2d').clearRect(0, 0, MESH_C.width, MESH_C.height);
+  HUD_C.getContext('2d').clearRect(0,  0, HUD_C.width,  HUD_C.height);
+}
+
+function lp(lm, i, W, H) {
+  // Returns pixel coords from landmark index
+  const l = lm[i];
+  if (!l) return null;
+  return { x: l.x * W, y: l.y * H };
+}
+
+function drawMesh(ctx, lm, W, H) {
+  ctx.clearRect(0, 0, W, H);
+
+  // ── Tessellation (subtle violet) ──
+  if (window.FACEMESH_TESSELATION) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(129,140,248,0.13)';
+    ctx.lineWidth = 0.5;
+    for (const [s, e] of FACEMESH_TESSELATION) {
+      const a = lp(lm, s, W, H), b = lp(lm, e, W, H);
+      if (!a || !b) continue;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ── Face oval (gold) ──
+  if (window.FACEMESH_FACE_OVAL) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(201,168,76,0.35)';
+    ctx.lineWidth = 1.2;
+    ctx.shadowColor = 'rgba(201,168,76,0.2)'; ctx.shadowBlur = 8;
+    for (const [s, e] of FACEMESH_FACE_OVAL) {
+      const a = lp(lm, s, W, H), b = lp(lm, e, W, H);
+      if (!a || !b) continue;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ── Eyes (cyan ellipses) ──
+  drawEyeEllipse(ctx, lm, W, H,
+    IDX.LE_IN, IDX.LE_OUT, IDX.LE_TOP, IDX.LE_BOT, IDX.L_IRIS, 'rgba(34,211,238,0.85)');
+  drawEyeEllipse(ctx, lm, W, H,
+    IDX.RE_IN, IDX.RE_OUT, IDX.RE_TOP, IDX.RE_BOT, IDX.R_IRIS, 'rgba(129,140,248,0.85)');
+
+  // ── Brows (gold lines) ──
+  drawBrowLine(ctx, lm, W, H, [IDX.LB_IN, IDX.LB_MID, IDX.LB_PEAK, IDX.LB_OUT]);
+  drawBrowLine(ctx, lm, W, H, [IDX.RB_IN, IDX.RB_MID, IDX.RB_PEAK, IDX.RB_OUT]);
+
+  // ── Midline dashed ──
+  const fore = lp(lm, IDX.FOREHEAD, W, H);
+  const chin = lp(lm, IDX.CHIN, W, H);
+  const nose = lp(lm, IDX.NOSE, W, H);
+  if (fore && chin && nose) {
+    ctx.save();
+    ctx.setLineDash([5, 8]);
+    ctx.strokeStyle = 'rgba(201,168,76,0.25)';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(fore.x, fore.y - 15);
+    ctx.lineTo(chin.x, chin.y + 10);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Filter overlays
+  if (S.filter === 'grid') drawGrid(ctx, lm, W, H);
+  if (S.filter === 'h1')   drawHair(ctx, lm, W, H, 1);
+  if (S.filter === 'h2')   drawHair(ctx, lm, W, H, 2);
+  if (S.filter === 'h3')   drawHair(ctx, lm, W, H, 3);
+}
+
+function drawEyeEllipse(ctx, lm, W, H, inI, outI, topI, botI, irisI, color) {
+  const inn = lp(lm, inI, W, H);
+  const out = lp(lm, outI, W, H);
+  const top = lp(lm, topI, W, H);
+  const bot = lp(lm, botI, W, H);
+  if (!inn || !out || !top || !bot) return;
+
+  const cx = (inn.x + out.x) / 2;
+  const cy = (top.y + bot.y) / 2;
+  const rx = dist2(inn, out) / 2;
+  const ry = dist2(top, bot) / 2;
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = color; ctx.shadowBlur = 8;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, Math.max(rx, 1), Math.max(ry, 1), 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const iris = lp(lm, irisI, W, H);
+  if (iris) {
+    ctx.fillStyle = color;
+    ctx.shadowBlur = 14;
+    ctx.beginPath(); ctx.arc(iris.x, iris.y, 2.5, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawBrowLine(ctx, lm, W, H, idxs) {
+  const pts = idxs.map(i => lp(lm, i, W, H)).filter(Boolean);
+  if (pts.length < 2) return;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(201,168,76,0.7)';
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = 'rgba(201,168,76,0.4)'; ctx.shadowBlur = 6;
+  ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawGrid(ctx, lm, W, H) {
+  const fore = lp(lm, IDX.FOREHEAD, W, H);
+  const chin = lp(lm, IDX.CHIN, W, H);
+  const lc   = lp(lm, IDX.L_CHEEK, W, H);
+  const rc   = lp(lm, IDX.R_CHEEK, W, H);
+  if (!fore || !chin || !lc || !rc) return;
+
+  const x1 = rc.x, x2 = lc.x;
+  const y1 = fore.y - 10, y2 = chin.y + 10;
+  const dX = (x2 - x1) / 3, dY = (y2 - y1) / 3;
+
+  ctx.save();
+  ctx.setLineDash([3, 6]); ctx.lineWidth = 0.8;
+
+  ctx.strokeStyle = 'rgba(34,211,238,0.25)';
+  for (let i = 1; i < 3; i++) {
+    ctx.beginPath(); ctx.moveTo(x1 + dX*i, y1); ctx.lineTo(x1 + dX*i, y2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x1, y1 + dY*i); ctx.lineTo(x2, y1 + dY*i); ctx.stroke();
+  }
+
+  const midX = (x1 + x2) / 2;
+  ctx.setLineDash([5, 5]);
+  ctx.strokeStyle = 'rgba(201,168,76,0.4)';
+  ctx.beginPath(); ctx.moveTo(midX, y1); ctx.lineTo(midX, y2); ctx.stroke();
+  ctx.restore();
+}
+
+function drawHair(ctx, lm, W, H, type) {
+  const fore = lp(lm, IDX.FOREHEAD, W, H);
+  const lc   = lp(lm, IDX.L_CHEEK, W, H);
+  const rc   = lp(lm, IDX.R_CHEEK, W, H);
+  if (!fore || !lc || !rc) return;
+
+  const mid = (lc.x + rc.x) / 2;
+  const fw  = Math.abs(lc.x - rc.x);
+  const hw  = fw * 0.58;
+  const fy  = fore.y;
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(5,8,18,0.88)';
+  ctx.strokeStyle = 'rgba(201,168,76,0.45)';
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = 'rgba(201,168,76,0.25)'; ctx.shadowBlur = 14;
+
+  if (type === 1) {
+    // Classic clean taper
+    ctx.beginPath();
+    ctx.moveTo(mid - hw, fy + 5);
+    ctx.bezierCurveTo(mid - hw, fy - hw*0.45, mid - hw*0.5, fy - hw*0.88, mid, fy - hw*0.92);
+    ctx.bezierCurveTo(mid + hw*0.5, fy - hw*0.88, mid + hw, fy - hw*0.45, mid + hw, fy + 5);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    // Side part
+    ctx.save(); ctx.setLineDash([2,4]); ctx.strokeStyle='rgba(34,211,238,0.5)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(mid - hw*0.1, fy-hw*0.92); ctx.lineTo(mid - hw*0.05, fy+2); ctx.stroke();
+    ctx.restore();
+  }
+
+  if (type === 2) {
+    // Textured quiff / pushed up
+    ctx.beginPath();
+    ctx.moveTo(mid - hw*1.02, fy + 3);
+    ctx.bezierCurveTo(mid - hw*0.9, fy - hw*0.3, mid - hw*0.3, fy - hw*0.65, mid, fy - hw*1.12);
+    ctx.bezierCurveTo(mid + hw*0.3, fy - hw*0.65, mid + hw*0.9, fy - hw*0.3, mid + hw*1.02, fy + 3);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    // Volume strands
+    ctx.save(); ctx.setLineDash([2,3]); ctx.strokeStyle='rgba(201,168,76,0.28)'; ctx.lineWidth=0.8;
+    [-0.35,-0.12,0.12,0.35].forEach(ox => {
+      ctx.beginPath(); ctx.moveTo(mid + ox*hw, fy+2);
+      ctx.quadraticCurveTo(mid + ox*hw*0.4, fy - hw*0.7, mid + ox*hw*0.08, fy - hw*1.08);
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+
+  if (type === 3) {
+    // Slick back undercut
+    ctx.beginPath();
+    ctx.moveTo(mid - hw*1.08, fy + 4);
+    ctx.bezierCurveTo(mid - hw*1.08, fy - hw*0.12, mid - hw*0.55, fy - hw*0.52, mid - hw*0.1, fy - hw*0.78);
+    ctx.bezierCurveTo(mid + hw*0.25, fy - hw*0.94, mid + hw*0.82, fy - hw*0.9, mid + hw*1.08, fy - hw*0.55);
+    ctx.lineTo(mid + hw*1.08, fy + 4);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    // Fade lines
+    ctx.save(); ctx.setLineDash([1,3]); ctx.strokeStyle='rgba(129,140,248,0.25)'; ctx.lineWidth=0.7;
+    for (let i=0;i<5;i++) {
+      const ty = fy - i*hw*0.08 + 4;
+      ctx.beginPath(); ctx.moveTo(mid - hw*1.08, ty); ctx.lineTo(mid - hw*0.45, ty - hw*0.05); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawHud(ctx, data, poseData, W, H) {
+  ctx.clearRect(0, 0, W, H);
+  if (!data) return;
+
+  const lm = data._lm;
+
+  // L / R eye labels (in HUD canvas — NOT mirrored, so x is flipped vs video)
+  const lTop = lp(lm, IDX.LE_TOP, W, H);
+  const rTop = lp(lm, IDX.RE_TOP, W, H);
+
+  if (lTop && rTop) {
+    ctx.font = '600 9px "DM Sans"';
+    const lx = W - lTop.x;
+    const rx = W - rTop.x;
+    ctx.fillStyle = 'rgba(34,211,238,0.9)';
+    ctx.fillText('L', lx - 4, lTop.y - 16);
+    ctx.fillStyle = 'rgba(129,140,248,0.9)';
+    ctx.fillText('R', rx - 4, rTop.y - 16);
+  }
+
+  // ── Posture overlays on HUD ──
+  if (poseData) {
+    drawPoseHud(ctx, poseData, lm, W, H);
+  }
+
+  // Score badge bottom right
+  if (data.score != null) {
+    const score = data.score;
+    const col = score >= 80 ? '#34D399' : score >= 65 ? '#FBBF24' : '#F87171';
+    const bx = W - 116, by = H - 60, bw = 104, bh = 44;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(7,9,15,0.78)';
+    roundRect2(ctx, bx, by, bw, bh, 8); ctx.fill();
+    ctx.strokeStyle = col + '55'; ctx.lineWidth = 1;
+    roundRect2(ctx, bx, by, bw, bh, 8); ctx.stroke();
+
+    ctx.fillStyle = col;
+    ctx.font = '500 24px "DM Mono"';
+    ctx.fillText(score + '%', bx + 10, by + 30);
+
+    ctx.fillStyle = 'rgba(100,116,139,0.9)';
+    ctx.font = '600 8px "DM Sans"';
+    ctx.fillText('SYMMETRY', bx + 10, by + 40);
+    ctx.restore();
+  }
+}
+
+function drawPoseHud(ctx, pose, lm, W, H) {
+  // Tilt line across eyes
+  const lEyePt = lp(lm, IDX.LE_TOP, W, H);
+  const rEyePt = lp(lm, IDX.RE_TOP, W, H);
+  if (lEyePt && rEyePt) {
+    const lx = W - lEyePt.x, rx = W - rEyePt.x;
+    const tiltColor = Math.abs(pose.roll) < 3 ? 'rgba(52,211,153,0.5)'
+      : Math.abs(pose.roll) < 7 ? 'rgba(251,191,36,0.5)'
+      : 'rgba(248,113,113,0.5)';
+
+    ctx.save();
+    ctx.strokeStyle = tiltColor;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 6]);
+    ctx.shadowColor = tiltColor; ctx.shadowBlur = 6;
+    ctx.beginPath();
+    ctx.moveTo(lx - 20, lEyePt.y);
+    ctx.lineTo(rx + 20, rEyePt.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Yaw arrow on nose tip (shows head turn direction)
+  const nosePt = lp(lm, IDX.NOSE_TIP, W, H);
+  if (nosePt && Math.abs(pose.yaw) > 3) {
+    const nx = W - nosePt.x;
+    const arrowLen = Math.min(Math.abs(pose.yaw) * 2.5, 40);
+    const dir = pose.yaw > 0 ? 1 : -1;
+    const yawColor = Math.abs(pose.yaw) < 8 ? 'rgba(34,211,238,0.7)' : 'rgba(251,191,36,0.7)';
+
+    ctx.save();
+    ctx.strokeStyle = yawColor; ctx.lineWidth = 1.5;
+    ctx.shadowColor = yawColor; ctx.shadowBlur = 6;
+    ctx.beginPath();
+    ctx.moveTo(nx, nosePt.y);
+    ctx.lineTo(nx + dir * arrowLen, nosePt.y);
+    // arrowhead
+    ctx.lineTo(nx + dir * arrowLen - dir * 6, nosePt.y - 4);
+    ctx.moveTo(nx + dir * arrowLen, nosePt.y);
+    ctx.lineTo(nx + dir * arrowLen - dir * 6, nosePt.y + 4);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Posture badge top-right corner
+  const badgeX = W - 140, badgeY = 16;
+  const fhpColor = pose.fhp < 10 ? '#34D399' : pose.fhp < 20 ? '#FBBF24' : '#F87171';
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(7,9,15,0.75)';
+  roundRect2(ctx, badgeX, badgeY, 124, 50, 8); ctx.fill();
+  ctx.strokeStyle = 'rgba(30,45,69,0.8)'; ctx.lineWidth = 1;
+  roundRect2(ctx, badgeX, badgeY, 124, 50, 8); ctx.stroke();
+
+  ctx.font = '600 8px "DM Sans"';
+  ctx.fillStyle = 'rgba(100,116,139,0.8)';
+  ctx.fillText('HEAD POSE', badgeX + 10, badgeY + 14);
+
+  ctx.font = '500 10px "DM Mono"';
+  ctx.fillStyle = Math.abs(pose.yaw) > 8 ? '#FBBF24' : '#94A3B8';
+  ctx.fillText(`YAW ${pose.yaw > 0 ? '+' : ''}${pose.yaw.toFixed(1)}°`, badgeX + 10, badgeY + 28);
+
+  ctx.fillStyle = Math.abs(pose.roll) > 4 ? '#FBBF24' : '#94A3B8';
+  ctx.fillText(`ROLL ${pose.roll > 0 ? '+' : ''}${pose.roll.toFixed(1)}°`, badgeX + 10, badgeY + 42);
+
+  ctx.fillStyle = fhpColor;
+  ctx.font = '600 10px "DM Mono"';
+  ctx.fillText(`FHP ${pose.fhp.toFixed(0)}%`, badgeX + 76, badgeY + 28);
+  ctx.restore();
+}
+
+function roundRect2(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y);   ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r); ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);   ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r);     ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+
+// ══════════════════════════════════════
+//  FIX 1 — 3D HEAD POSE ANALYSIS
+// ══════════════════════════════════════
+function dist3(a, b) {
+  const dx = a.x - b.x, dy = a.y - b.y, dz = (a.z||0) - (b.z||0);
+  return Math.hypot(dx, dy, dz);
+}
+
+function estimateHeadPose(lm) {
+  const nose=lm[4], fore=lm[10], chin=lm[152],
+        lc=lm[234], rc=lm[454], le=lm[33]||lm[133], re=lm[263]||lm[362];
+  if (!nose||!fore||!chin||!lc||!rc||!le||!re) return null;
+
+  const faceW3D = dist3(lc, rc);
+  const eyeSpan = dist3(le, re);
+  const cx = (lc.x+rc.x)/2, cy = (fore.y+chin.y)/2;
+  const noseOffX = Math.abs(nose.x-cx), noseOffY = Math.abs(nose.y-cy);
+  const faceScale = Math.max(eyeSpan, faceW3D*0.45, 1e-6);
+
+  return {
+    yaw:   Math.max(-18, Math.min(18, ((rc.z - lc.z) + (re.z - le.z)*0.5) * 65)),
+    pitch: Math.max(-18, Math.min(18, ((nose.y - fore.y) - (chin.y - nose.y)) * 45)),
+    roll:  Math.max(-15, Math.min(15, (re.y - le.y) * 180)),
+    scale: faceScale,
+    confidence: Math.max(0.2, Math.min(1, 1 - ((noseOffX+noseOffY)/(faceScale+1e-6))*0.35)),
+  };
+}
+
+function calculate3DNormalization(lm) {
+  const pose = estimateHeadPose(lm);
+  const fore=lm[10], chin=lm[152], lc=lm[234], rc=lm[454];
+  if (!pose||!fore||!chin||!lc||!rc)
+    return { yawFactor:1, pitchFactor:1, rollFactor:1, faceScale:1, confidence:0 };
+
+  const lw = dist3(fore, lc), rw = dist3(fore, rc);
+  const faceH3D = dist3(fore, chin);
+  const wb = (lw+1e-6)/(rw+1e-6);
+
+  return {
+    yawFactor:   Math.max(0.82, Math.min(1.18, 1 + (wb-1)*0.55 - pose.yaw/120)),
+    pitchFactor: Math.max(0.82, Math.min(1.18, 1 - (faceH3D/(pose.scale+1e-6)-1)*0.35 - pose.pitch/140)),
+    rollFactor:  Math.max(0.85, Math.min(1.15, 1 - pose.roll/160)),
+    faceScale:   pose.scale,
+    confidence:  pose.confidence,
+  };
+}
+
+// ══════════════════════════════════════
+//  FIX 2 — GLOBAL EMA SMOOTHING BUFFER
+// ══════════════════════════════════════
+const TelemetryBuffer = {
+  eyes:0, cheeks:0, nose:0, lips:0, jaw:0, score:100, initialized:false
+};
+const SMOOTH_ALPHA = 0.12;
+
+function smooth(key, val, alpha=SMOOTH_ALPHA) {
+  if (!TelemetryBuffer.initialized || Number.isNaN(TelemetryBuffer[key])) {
+    TelemetryBuffer[key] = val; return val;
+  }
+  const a = Math.max(0.03, Math.min(0.35, alpha));
+  TelemetryBuffer[key] = TelemetryBuffer[key] + a * (val - TelemetryBuffer[key]);
+  return TelemetryBuffer[key];
+}
+
+// ══════════════════════════════════════
+//  FIX 4 — TRIGONOMETRIC OCULAR TILT
+// ══════════════════════════════════════
+function computeOcularTiltAngle(lm, pose={rollFactor:1,confidence:1}) {
+  const l = lm[468]||lm[133], r = lm[473]||lm[362];
+  if (!l||!r) return smooth('eyes', 0, 0.08);
+  let deg = Math.abs(Math.atan2(r.y-l.y, r.x-l.x) * 180/Math.PI);
+  if (deg > 90) deg = Math.abs(deg-180);
+  deg = deg / Math.max(0.85, pose.rollFactor||1);
+  deg *= 0.65 + 0.35*(pose.confidence??1);
+  return smooth('eyes', deg, 0.16);
+}
+
+// ══════════════════════════════════════
+//  FIX 5 — MANDIBULAR RAMUS RATIO
+// ══════════════════════════════════════
+function computeMandibularShift(lm, pose={yawFactor:1,confidence:1}) {
+  const chin=lm[152], lj=lm[172], rj=lm[397];
+  if (!chin||!lj||!rj) return smooth('jaw', 0, 0.1);
+  const ld=dist3(chin,lj), rd=dist3(chin,rj);
+  const raw = (Math.abs(ld-rd)/((ld+rd)/2+1e-6))*100;
+  const cal = Math.max(0, raw - Math.abs(1-(pose.yawFactor||1))*7.5);
+  return smooth('jaw', cal*(0.7+0.3*(pose.confidence??1)), 0.14);
+}
+
+// ══════════════════════════════════════
+//  FIX 6 — WEIGHTED SYMMETRY CORE SCORE
+// ══════════════════════════════════════
+function evaluateGlobalSymmetryScore(eyesAngle, cheeksDev, noseDev, jawDev, pose={confidence:1}) {
+  const deficit = Math.abs(eyesAngle)*4.2 + Math.abs(noseDev)*4.5
+                + Math.abs(cheeksDev)*2.0 + Math.abs(jawDev)*1.5;
+  const posePenalty = (1 - Math.max(0.25, Math.min(1, pose.confidence??1))) * 10;
+  return smooth('score', Math.max(45, Math.min(99, 100 - deficit*0.82 - posePenalty)), 0.08);
+}
+
+// ══════════════════════════════════════
+//  METRIC COMPUTATION
+// ══════════════════════════════════════
+function dist2(a, b) {
+  return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
+}
+
+function toMM(px, faceWpx) {
+  return (px / faceWpx) * 150;
+}
+
+function computeMetrics(lm, W, H, pose = { yawFactor:1, pitchFactor:1, rollFactor:1, confidence:1, faceScale:1 }) {
+  const g = i => lp(lm, i, W, H);
+
+  const lCheek = g(IDX.L_CHEEK), rCheek = g(IDX.R_CHEEK);
+  if (!lCheek || !rCheek) return null;
+  const faceWpx = dist2(lCheek, rCheek);
+  const mm = px => toMM(px, faceWpx);
+
+  // Eyes
+  const leIn  = g(IDX.LE_IN),  leOut = g(IDX.LE_OUT);
+  const leTop = g(IDX.LE_TOP), leBot = g(IDX.LE_BOT);
+  const reIn  = g(IDX.RE_IN),  reOut = g(IDX.RE_OUT);
+  const reTop = g(IDX.RE_TOP), reBot = g(IDX.RE_BOT);
+
+  const lEW = leIn && leOut ? dist2(leIn, leOut) : 0;
+  const rEW = reIn && reOut ? dist2(reIn, reOut) : 0;
+  const lEH = leTop && leBot ? dist2(leTop, leBot) : 0;
+  const rEH = reTop && reBot ? dist2(reTop, reBot) : 0;
+
+  const lECY = leTop && leBot ? (leTop.y + leBot.y) / 2 : 0;
+  const rECY = reTop && reBot ? (reTop.y + reBot.y) / 2 : 0;
+  // Pose-corrected vertical offset
+  const eyeVertOffset = mm(lECY - rECY) / Math.max(0.85, pose.pitchFactor || 1);
+
+  // Iris
+  const lIris = g(IDX.L_IRIS) || (leIn && leOut ? { x:(leIn.x+leOut.x)/2, y:lECY } : null);
+  const rIris = g(IDX.R_IRIS) || (reIn && reOut ? { x:(reIn.x+reOut.x)/2, y:rECY } : null);
+
+  const lIrisIn  = lIris && leIn  ? mm(dist2(lIris, leIn))  : 0;
+  const lIrisOut = lIris && leOut ? mm(dist2(lIris, leOut)) : 0;
+  const rIrisIn  = rIris && reIn  ? mm(dist2(rIris, reIn))  : 0;
+  const rIrisOut = rIris && reOut ? mm(dist2(rIris, reOut)) : 0;
+
+  // Brows
+  const lbIn = g(IDX.LB_IN), lbPk = g(IDX.LB_PEAK), lbOut = g(IDX.LB_OUT);
+  const rbIn = g(IDX.RB_IN), rbPk = g(IDX.RB_PEAK), rbOut = g(IDX.RB_OUT);
+
+  const lBH = leTop && lbPk ? mm(leTop.y - lbPk.y) : 0;
+  const rBH = reTop && rbPk ? mm(reTop.y - rbPk.y) : 0;
+
+  const lBAng = lbIn && lbOut ? Math.atan2(lbOut.y - lbIn.y, lbOut.x - lbIn.x) * 180/Math.PI : 0;
+  const rBAng = rbIn && rbOut ? Math.atan2(rbOut.y - rbIn.y, rbOut.x - rbIn.x) * 180/Math.PI : 0;
+
+  const nose  = g(IDX.NOSE);
+  const midX  = nose ? nose.x : (lCheek.x + rCheek.x) / 2;
+  // Pose-corrected brow midline distances
+  const lBMid = lbIn ? mm(Math.abs(lbIn.x - midX)) / Math.max(0.85, pose.yawFactor || 1) : 0;
+  const rBMid = rbIn ? mm(Math.abs(rbIn.x - midX)) / Math.max(0.85, pose.yawFactor || 1) : 0;
+
+  // Jaw — use 3D-aware mandibular shift
+  const chin = g(IDX.CHIN);
+  const lJaw = g(IDX.L_JAW), rJaw = g(IDX.R_JAW);
+  const lJD  = lJaw && chin ? mm(dist2(lJaw, chin)) : 0;
+  const rJD  = rJaw && chin ? mm(dist2(rJaw, chin)) : 0;
+
+  // Mouth corners
+  const lM = g(IDX.L_MOUTH), rM = g(IDX.R_MOUTH);
+  const mouthDiff = lM && rM ? mm(lM.y - rM.y) : 0;
+
+  // Face dimensions
+  const fore  = g(IDX.FOREHEAD);
+  const faceH = fore && chin ? mm(dist2(fore, chin)) : 0;
+  const faceW = mm(faceWpx);
+  const midlineOffset = nose ? mm(nose.x - (lCheek.x + rCheek.x)/2) : 0;
+
+  // Pose-aware component deviations
+  const eyeAngle  = computeOcularTiltAngle(lm, pose);
+  const jawDev    = computeMandibularShift(lm, pose);
+  const noseDev   = Math.abs(midlineOffset) / Math.max(0.85, pose.yawFactor||1);
+  const cheekDev  = Math.abs(mm(lEW - rEW));
+
+  // ── Weighted score via Fix 6 ──
+  const score = Math.round(evaluateGlobalSymmetryScore(eyeAngle, cheekDev, noseDev, jawDev, pose));
+
+  // Mark buffer ready
+  TelemetryBuffer.initialized = true;
+
+  return {
+    score,
+    lEW: mm(lEW), rEW: mm(rEW),
+    lEH: mm(lEH), rEH: mm(rEH),
+    eyeVertOffset,
+    lIrisIn, lIrisOut, rIrisIn, rIrisOut,
+    lBH, rBH, lBAng, rBAng, lBMid, rBMid,
+    lJD, rJD, mouthDiff, midlineOffset,
+    faceW, faceH,
+    poseConfidence: pose.confidence,
+    _lm: lm,
+  };
+}
+
+// ══════════════════════════════════════
+//  CARD RENDERING
+// ══════════════════════════════════════
+const f1 = v => typeof v === 'number' ? Math.abs(v).toFixed(1) : '--';
+const fS = v => typeof v === 'number' ? (v>=0?'+':'')+v.toFixed(1) : '--';
+
+function sev(val, mild, mod) {
+  if (val < mild) return 'none';
+  if (val < mod)  return 'mild';
+  if (val < mod*1.8) return 'moderate';
+  return 'severe';
+}
+
+function badge(s) {
+  const map = { none:'badge-none', mild:'badge-mild', moderate:'badge-mod', severe:'badge-severe' };
+  const lbl = { none:'BALANCED', mild:'LOW VARIATION', moderate:'MODERATE VARIATION', severe:'HIGHER VARIATION' };
+  return `<div class="badge ${map[s]||'badge-none'}">${lbl[s]||'BALANCED'}</div>`;
+}
+
+function mrow(name, lv, rv, dv, unit='mm', flag=false) {
+  const dc = flag === 'alert' ? 'alert' : flag ? 'flag' : '';
+  return `<div class="mrow">
+    <span class="mrow-name">${name}</span>
+    <div class="mrow-vals">
+      <span class="v-l">${f1(lv)}${unit}</span>
+      <span class="v-div">│</span>
+      <span class="v-r">${f1(rv)}${unit}</span>
+      <span class="v-d ${dc}">Δ${f1(dv)}${unit}</span>
+    </div>
+  </div>`;
+}
+
+function bars(lv, rv, max, lcolor='var(--cyan)', rcolor='var(--violet)') {
+  const lp = Math.min(lv/max*100, 100), rp = Math.min(rv/max*100, 100);
+  return `<div class="bars">
+    <div class="bar-row">
+      <span class="bar-lbl">L</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${lp}%;background:${lcolor}"></div></div>
+      <span class="bar-val" style="color:${lcolor}">${f1(lv)}mm</span>
+    </div>
+    <div class="bar-row">
+      <span class="bar-lbl">R</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${rp}%;background:${rcolor}"></div></div>
+      <span class="bar-val" style="color:${rcolor}">${f1(rv)}mm</span>
+    </div>
+  </div>`;
+}
+
+function updateAllCards(data) {
+  if (!data) return;
+  updateScore(data);
+  updateEyes(data);
+  updateBrows(data);
+  updateGeo(data);
+  updateCauses(data);
+  updateRoutine(data);
+  updateGroom(data);
+}
+
+function updateScore(d) {
+  const s = d.score;
+  const circumference = 213.6;
+  const offset = circumference * (1 - s / 100);
+  const arc = document.getElementById('score-arc');
+  arc.style.strokeDashoffset = offset;
+  const col = s >= 80 ? 'var(--green)' : s >= 65 ? 'var(--amber)' : 'var(--red)';
+  arc.style.stroke = col;
+  const num = document.getElementById('score-num');
+  num.textContent = s + '%';
+  num.style.color = col;
+
+  const verdicts = [
+    [85, 'Excellent Balance'],
+    [70, 'Good Balance'],
+    [55, 'Moderate Variation'],
+    [0,  'Higher Variation'],
+  ];
+  const v = verdicts.find(([t]) => s >= t);
+  document.getElementById('score-verdict').innerHTML = v ? v[1].replace(' ','<br>') : 'Analyzing';
+
+  const notes = [
+    [85, 'Facial proportions are within a strong balance range. Small natural differences are normal.'],
+    [70, 'Minor variation is present. A steadier front-facing capture may improve consistency.'],
+    [55, 'Moderate variation detected. Try even lighting and a neutral head position for cleaner results.'],
+    [0,  'Higher variation detected. Recheck framing, pose, and camera angle for a more stable analysis.'],
+  ];
+  // Show confidence note if pose data is weak
+  const confNote = d.poseConfidence != null && d.poseConfidence < 0.6
+    ? ' · Analysis confidence lower due to head angle.' : '';
+  const n = notes.find(([t]) => s >= t);
+  document.getElementById('score-note').textContent = (n ? n[1] : '') + confNote;
+}
+
+function updateEyes(d) {
+  const wDiff = Math.abs(d.lEW - d.rEW);
+  const hDiff = Math.abs(d.lEH - d.rEH);
+  const wS = sev(wDiff, 1.0, 2.5);
+  const hS = sev(hDiff, 0.8, 2.0);
+  const vS = sev(Math.abs(d.eyeVertOffset), 0.8, 2.0);
+  const dom = [wS, hS, vS].includes('severe') ? 'severe'
+    : [wS, hS, vS].includes('moderate') ? 'moderate'
+    : [wS, hS, vS].includes('mild') ? 'mild' : 'none';
+
+  const vertNote = d.eyeVertOffset > 0.3 ? `Left eye center sits ${f1(d.eyeVertOffset)}mm lower than right`
+    : d.eyeVertOffset < -0.3 ? `Right eye center sits ${f1(-d.eyeVertOffset)}mm lower than left`
+    : 'Eye centers horizontally aligned';
+
+  document.getElementById('eye-body').innerHTML = `
+    ${mrow('Horizontal fissure width', d.lEW, d.rEW, wDiff, 'mm', wS==='severe'?'alert':wS!=='none')}
+    ${mrow('Palpebral height (vertical)', d.lEH, d.rEH, hDiff, 'mm', hS==='severe'?'alert':hS!=='none')}
+    <div class="mrow">
+      <span class="mrow-name">Vertical offset</span>
+      <div class="mrow-vals">
+        <span class="v-d ${vS!=='none'?'flag':''}">${fS(d.eyeVertOffset)}mm</span>
+      </div>
+    </div>
+    <div class="mrow">
+      <span class="mrow-name">Iris → inner canthus</span>
+      <div class="mrow-vals">
+        <span class="v-l">${f1(d.lIrisIn)}mm</span>
+        <span class="v-div">│</span>
+        <span class="v-r">${f1(d.rIrisIn)}mm</span>
+        <span class="v-d">Δ${f1(Math.abs(d.lIrisIn-d.rIrisIn))}mm</span>
+      </div>
+    </div>
+    ${bars(d.lEW, d.rEW, 42)}
+    <div style="font-size:10px;color:var(--muted);margin-top:10px;line-height:1.6">${vertNote}</div>
+    ${badge(dom)}
+  `;
+}
+
+function updateBrows(d) {
+  const hDiff = Math.abs(d.lBH - d.rBH);
+  const aDiff = Math.abs(d.lBAng - d.rBAng);
+  const hS = sev(hDiff, 1.2, 3.0);
+  const aS = sev(aDiff, 4, 9);
+
+  const note = d.lBH < d.rBH - 0.8 ? 'Left brow positioned lower — dominant target for corrective exercises'
+    : d.rBH < d.lBH - 0.8 ? 'Right brow positioned lower — dominant target for corrective exercises'
+    : 'Brow heights within normal variation';
+
+  document.getElementById('brow-body').innerHTML = `
+    ${mrow('Brow height above upper lid', d.lBH, d.rBH, hDiff, 'mm', hS==='severe'?'alert':hS!=='none')}
+    <div class="mrow">
+      <span class="mrow-name">Arch angle</span>
+      <div class="mrow-vals">
+        <span class="v-l">${f1(d.lBAng)}°</span>
+        <span class="v-div">│</span>
+        <span class="v-r">${f1(d.rBAng)}°</span>
+        <span class="v-d ${aS!=='none'?'flag':''}">Δ${f1(aDiff)}°</span>
+      </div>
+    </div>
+    ${mrow('Inner brow to midline', d.lBMid, d.rBMid, Math.abs(d.lBMid-d.rBMid), 'mm', false)}
+    ${bars(d.lBH, d.rBH, 22)}
+    <div style="font-size:10px;color:var(--muted);margin-top:10px;line-height:1.6">${note}</div>
+    ${badge(hS)}
+  `;
+}
+
+function updateGeo(d) {
+  const jDiff = Math.abs(d.lJD - d.rJD);
+  const jS = sev(jDiff, 2, 5);
+  const mS = sev(Math.abs(d.mouthDiff), 1.0, 2.5);
+
+  const midNote = d.midlineOffset > 2 ? `Nose tip deviates ${f1(d.midlineOffset)}mm left of midline`
+    : d.midlineOffset < -2 ? `Nose tip deviates ${f1(-d.midlineOffset)}mm right of midline`
+    : 'Nasal midline within normal range';
+
+  document.getElementById('geo-body').innerHTML = `
+    <div class="mrow">
+      <span class="mrow-name">Nasal midline offset</span>
+      <div class="mrow-vals">
+        <span class="v-d ${Math.abs(d.midlineOffset)>2?'flag':''}">${fS(d.midlineOffset)}mm</span>
+      </div>
+    </div>
+    ${mrow('Jaw arch (side → chin)', d.lJD, d.rJD, jDiff, 'mm', jS!=='none')}
+    <div class="mrow">
+      <span class="mrow-name">Mouth corner vertical Δ</span>
+      <div class="mrow-vals">
+        <span class="v-d ${mS!=='none'?'flag':''}">${fS(d.mouthDiff)}mm</span>
+      </div>
+    </div>
+    <div class="mrow">
+      <span class="mrow-name">Face ratio (H ÷ W)</span>
+      <div class="mrow-vals">
+        <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--dim)">${d.faceH && d.faceW ? (d.faceH/d.faceW).toFixed(2) : '--'}</span>
+      </div>
+    </div>
+    <div style="font-size:10px;color:var(--muted);margin-top:10px;line-height:1.6">${midNote}</div>
+    ${badge(jS)}
+  `;
+}
+
+function updateCauses(d) {
+  const causes = [];
+  const hDiff = Math.abs(d.lBH - d.rBH);
+  const eDiff = Math.abs(d.lEH - d.rEH);
+  const jDiff = Math.abs(d.lJD - d.rJD);
+
+  if (eDiff > 1.5 || hDiff > 2.0) {
+    causes.push({
+      icon: '🛌',
+      text: `<strong style="color:var(--text2)">Sleep posture bias</strong> — Habitual side-sleeping compresses periorbital soft tissue on the dependent side, progressively reducing palpebral aperture height over time. Eye height Δ${f1(eDiff)}mm detected. Switching to supine or alternating sides nightly is the primary intervention.`
+    });
+  }
+  if (jDiff > 3) {
+    causes.push({
+      icon: '🦷',
+      text: `<strong style="color:var(--text2)">Unilateral mastication</strong> — Habitual chewing on one side hypertrophies the ipsilateral masseter, broadening jaw appearance asymmetrically. Jaw arch Δ${f1(jDiff)}mm identified. Conscious bilateral chewing reduces this over 6–12 months.`
+    });
+  }
+  if (Math.abs(d.mouthDiff) > 1.5 || hDiff > 2.5) {
+    causes.push({
+      icon: '💪',
+      text: `<strong style="color:var(--text2)">Muscular hypertonicity</strong> — Elevated resting tone in the frontalis or zygomaticus on one side. Commonly caused by habitual unilateral squinting, postural asymmetry, or repetitive facial expression patterns.`
+    });
+  }
+  if (Math.abs(d.midlineOffset) > 2.5) {
+    causes.push({
+      icon: '🧠',
+      text: `<strong style="color:var(--text2)">Cervical posture / head tilt</strong> — Habitual head tilt or sternocleidomastoid tightness on one side creates apparent midline deviation of the midface (${f1(Math.abs(d.midlineOffset))}mm offset). Assess cervical mobility and consider corrective SCM stretching.`
+    });
+  }
+  if (Math.abs(d.lEW - d.rEW) > 2.0) {
+    causes.push({
+      icon: '🦴',
+      text: `<strong style="color:var(--text2)">Orbital morphology variation</strong> — Eye width asymmetry >2mm is predominantly skeletal, reflecting differences in supraorbital ridge depth or lateral orbital fat pad volume. Partially correctable visually through strategic brow grooming.`
+    });
+  }
+  if (!causes.length) {
+    causes.push({
+      icon: '✓',
+      text: `<strong style="color:var(--green)">No significant causal factors detected.</strong> All measured asymmetry values fall within normal biological variation. No structural intervention indicated at this time.`
+    });
+  }
+
+  document.getElementById('cause-body').innerHTML = causes.map(c =>
+    `<div class="cause-item"><span class="cause-icon">${c.icon}</span><span>${c.text}</span></div>`
+  ).join('');
+}
+
+function updateRoutine(d) {
+  const lBrowLow = d.lBH < d.rBH - 1.0;
+  const rBrowLow = d.rBH < d.lBH - 1.0;
+  const lEyeSmall = d.lEH < d.rEH - 0.8;
+  const rEyeSmall = d.rEH < d.lEH - 0.8;
+  const side = lBrowLow ? 'left' : rBrowLow ? 'right' : null;
+  const eyeSide = lEyeSmall ? 'left' : rEyeSmall ? 'right' : null;
+
+  const steps = [];
+
+  steps.push({
+    title: 'Tongue Posture & Mewing Protocol',
+    desc: 'Entire tongue flat on palate, lips sealed, teeth lightly touching. Breathe through nose exclusively. Applies sustained upward palatal pressure supporting symmetric midface development over 3–6 months.',
+    timer: '3 × 10 min daily — maintain as resting posture'
+  });
+
+  if (side) {
+    steps.push({
+      title: `Unilateral Frontalis Activation — ${side.toUpperCase()} side`,
+      desc: `Place two fingers of the opposite hand on the ${side} brow, applying firm downward resistance. Raise only the ${side} brow against that resistance, hold at apex, lower slowly. Isolates the weaker frontalis head for hypertrophic rebalancing.`,
+      timer: '3 sets × 15 reps — 2s hold — 60s rest between sets'
+    });
+  }
+
+  if (eyeSide) {
+    steps.push({
+      title: `Orbicularis Oculi Isolation — ${eyeSide.toUpperCase()} eye`,
+      desc: `Close the ${eyeSide} eye firmly, holding opposite eye open. Hold 3 seconds, then flutter-blink 10 times rapidly. Follow with a sustained 3-second squeeze. Targets orbicularis pars orbitalis for aperture normalization.`,
+      timer: '4 sets × 10 reps — morning and evening'
+    });
+  }
+
+  steps.push({
+    title: 'Masseter Release & Bilateral Jaw Training',
+    desc: 'Deep circular massage into the masseter belly (below cheekbone, 2cm anterior to jaw angle), 30 sec each side. Then deliberately chew on the weaker/smaller side exclusively for 5 minutes to progressively equalize muscle volume.',
+    timer: '2× daily — 6 minutes total'
+  });
+
+  steps.push({
+    title: 'SCM Stretch — Sternocleidomastoid',
+    desc: 'Tilt head toward right shoulder, rotate chin slightly upward and hold. Switch sides. Releases habitual SCM shortening that contributes to head tilt and apparent midface asymmetry.',
+    timer: '3 × 30s each side — post-workout or morning'
+  });
+
+  steps.push({
+    title: 'Zygomaticus Bilateral Resistance',
+    desc: 'Index fingers press inward at mouth corners, providing firm resistance. Attempt to smile/pull corners outward against resistance. Corrects bilateral imbalance in cheek muscle activation patterns.',
+    timer: '3 sets × 12 reps — 30 min before training'
+  });
+
+  document.getElementById('routine-body').innerHTML = steps.map((s, i) => `
+    <div class="step">
+      <div class="step-num">${String(i+1).padStart(2,'0')}</div>
+      <div class="step-body">
+        <div class="step-title">${s.title}</div>
+        <div class="step-desc">${s.desc}</div>
+        <div class="step-timer">⏱ ${s.timer}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function updateGroom(d) {
+  const items = [];
+  const lBrowLow = d.lBH < d.rBH - 1.0;
+  const rBrowLow = d.rBH < d.lBH - 1.0;
+  const lEyeSmall = d.lEH < d.rEH - 1.0;
+  const rEyeSmall = d.rEH < d.lEH - 1.0;
+
+  if (lBrowLow) {
+    items.push({ icon: '✂️', text: '<strong style="color:var(--text2)">Plucking — Left brow lower border:</strong> Remove 1–2 hairs exclusively from the lower border of the left brow near the arch peak. Never alter the upper border. This optically elevates the arch apex by ~1.5mm.' });
+    items.push({ icon: '✏️', text: '<strong style="color:var(--text2)">Brow pencil correction:</strong> Using a taupe/dark-ash pencil, draw 2–3 fine hair-stroke lines on the upper edge of the left brow extending the arch upward by 1mm. Blend with a spoolie pressed downward.' });
+  } else if (rBrowLow) {
+    items.push({ icon: '✂️', text: '<strong style="color:var(--text2)">Plucking — Right brow lower border:</strong> Remove 1–2 hairs from the lower border of the right brow at the arch peak to visually elevate it to match the left.' });
+  } else {
+    items.push({ icon: '✂️', text: '<strong style="color:var(--text2)">Brow maintenance (symmetric):</strong> Clean lower borders monthly. Keep arch peaks at equal horizontal height — use outer iris edge as a vertical reference landmark.' });
+  }
+
+  if (lEyeSmall) {
+    items.push({ icon: '👁', text: '<strong style="color:var(--text2)">Left waterline — nude liner:</strong> Apply matte nude or white eyeliner to the left waterline only. Creates optical illusion of enlarged palpebral aperture to match the right eye.' });
+  } else if (rEyeSmall) {
+    items.push({ icon: '👁', text: '<strong style="color:var(--text2)">Right waterline — nude liner:</strong> Apply matte nude eyeliner to the right waterline to visually open it to match the left eye aperture.' });
+  }
+
+  if (d.midlineOffset > 2) {
+    items.push({ icon: '💈', text: '<strong style="color:var(--text2)">Hair parting — left of center:</strong> Part 1–1.5cm left of center to create visual hair mass toward the left, optically balancing a rightward-deviating nasal midline.' });
+  } else if (d.midlineOffset < -2) {
+    items.push({ icon: '💈', text: '<strong style="color:var(--text2)">Hair parting — right of center:</strong> Part slightly right of center to counterbalance leftward nasal deviation, drawing the observer\'s eye toward the geometric face center.' });
+  } else {
+    items.push({ icon: '💈', text: '<strong style="color:var(--text2)">Hair parting — center or slight left:</strong> Midline is well-centered. A classic left-of-center part complements symmetric facial geometry without amplifying deviation.' });
+  }
+
+  if (Math.abs(d.lJD - d.rJD) > 3) {
+    const bigSide = d.lJD > d.rJD ? 'left' : 'right';
+    items.push({ icon: '🪒', text: `<strong style="color:var(--text2)">Beard shaping for jaw balance:</strong> Allow beard to grow fuller on the ${bigSide==='left'?'right':'left'} (smaller) jaw side. When shaping, remove slightly more from the ${bigSide} (larger) jaw side to optically equalize jaw width. Most effective single-session correction available.` });
+  }
+
+  document.getElementById('groom-body').innerHTML = items.map(g =>
+    `<div class="gitem"><span class="gitem-icon">${g.icon}</span><span>${g.text}</span></div>`
+  ).join('');
+}
+
+// ══════════════════════════════════════
+//  FEATURE 3 — DOMINANT SIDE DETECTOR
+// ══════════════════════════════════════
+
+function collectDominantFrame(lm, W, H) {
+  const dom = S.dom;
+  if (dom.done) return;
+
+  if (!dom.collecting) {
+    dom.collecting = true;
+    dom.frames = [];
+    renderDomCalibrating(0);
+  }
+
+  const g = i => lp(lm, i, W, H);
+
+  // Capture per-region landmark positions this frame
+  // We track VELOCITY between frames, so store current positions
+  const frame = {
+    // Brow Y positions
+    lBrowY: g(IDX.LB_PEAK) ? g(IDX.LB_PEAK).y : null,
+    rBrowY: g(IDX.RB_PEAK) ? g(IDX.RB_PEAK).y : null,
+    // Mouth corner Y
+    lMouthY: g(IDX.L_MOUTH_CORNER) ? g(IDX.L_MOUTH_CORNER).y : null,
+    rMouthY: g(IDX.R_MOUTH_CORNER) ? g(IDX.R_MOUTH_CORNER).y : null,
+    // Cheekbone X movement (subtle lateral pull)
+    lZygoX: g(IDX.L_ZYGO) ? g(IDX.L_ZYGO).x : null,
+    rZygoX: g(IDX.R_ZYGO) ? g(IDX.R_ZYGO).x : null,
+    // Eye aperture
+    lEyeH: (g(IDX.LE_TOP) && g(IDX.LE_BOT)) ? Math.abs(g(IDX.LE_TOP).y - g(IDX.LE_BOT).y) : null,
+    rEyeH: (g(IDX.RE_TOP) && g(IDX.RE_BOT)) ? Math.abs(g(IDX.RE_TOP).y - g(IDX.RE_BOT).y) : null,
+  };
+
+  dom.frames.push(frame);
+
+  const pct = Math.round((dom.frames.length / dom.TARGET_FRAMES) * 100);
+  if (dom.frames.length % 6 === 0) renderDomCalibrating(pct);
+
+  if (dom.frames.length >= dom.TARGET_FRAMES) {
+    finalizeDominantSide();
+  }
+}
+
+function finalizeDominantSide() {
+  const dom = S.dom;
+  const frames = dom.frames;
+
+  // Compute frame-to-frame velocity (absolute delta) for each region on each side
+  function velocity(arr) {
+    if (arr.length < 2) return 0;
+    let total = 0, count = 0;
+    for (let i = 1; i < arr.length; i++) {
+      if (arr[i] != null && arr[i-1] != null) {
+        total += Math.abs(arr[i] - arr[i-1]);
+        count++;
+      }
+    }
+    return count > 0 ? total / count : 0;
+  }
+
+  // Extract time series
+  const lBrowSeries  = frames.map(f => f.lBrowY);
+  const rBrowSeries  = frames.map(f => f.rBrowY);
+  const lMouthSeries = frames.map(f => f.lMouthY);
+  const rMouthSeries = frames.map(f => f.rMouthY);
+  const lZygoSeries  = frames.map(f => f.lZygoX);
+  const rZygoSeries  = frames.map(f => f.rZygoX);
+  const lEyeSeries   = frames.map(f => f.lEyeH);
+  const rEyeSeries   = frames.map(f => f.rEyeH);
+
+  const breakdown = {
+    brow:   { L: velocity(lBrowSeries),  R: velocity(rBrowSeries)  },
+    mouth:  { L: velocity(lMouthSeries), R: velocity(rMouthSeries) },
+    cheek:  { L: velocity(lZygoSeries),  R: velocity(rZygoSeries)  },
+    eye:    { L: velocity(lEyeSeries),   R: velocity(rEyeSeries)   },
+  };
+
+  // Weighted composite (brow and mouth most diagnostic)
+  const weights = { brow: 0.35, mouth: 0.35, cheek: 0.15, eye: 0.15 };
+  let leftTotal = 0, rightTotal = 0;
+  for (const [key, w] of Object.entries(weights)) {
+    leftTotal  += breakdown[key].L * w;
+    rightTotal += breakdown[key].R * w;
+  }
+
+  const total = leftTotal + rightTotal;
+  const leftPct  = total > 0 ? Math.round((leftTotal  / total) * 100) : 50;
+  const rightPct = total > 0 ? Math.round((rightTotal / total) * 100) : 50;
+  const dominantSide = leftPct >= rightPct ? 'LEFT' : 'RIGHT';
+  const confidence = Math.abs(leftPct - rightPct);
+
+  dom.result = { dominantSide, leftPct, rightPct, breakdown, confidence };
+  dom.done = true;
+  dom.collecting = false;
+
+  renderDomResult();
+}
+
+function renderDomCalibrating(pct) {
+  const circumference = 150.8; // 2π×24
+  const offset = circumference * (1 - pct / 100);
+  document.getElementById('dom-body').innerHTML = `
+    <div class="dom-calibrating">
+      <div class="dom-progress-ring">
+        <svg width="64" height="64" viewBox="0 0 64 64">
+          <circle cx="32" cy="32" r="24" fill="none" stroke="var(--border)" stroke-width="3"/>
+          <circle cx="32" cy="32" r="24" fill="none" stroke="var(--gold)" stroke-width="3"
+            stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="${offset}"
+            transform="rotate(-90 32 32)" style="transition:stroke-dashoffset 0.3s"/>
+        </svg>
+        <div class="dom-ring-pct">${pct}%</div>
+      </div>
+      <div class="dom-cal-label calibrating-pulse">
+        Passive scan in progress<br/>
+        <span style="color:var(--muted);font-size:9px">Stay natural — do not perform expressions<br/>Collecting ${pct < 100 ? Math.round(pct * 1.8) : 180}/180 frames</span>
+      </div>
+    </div>`;
+  document.getElementById('dom-badge').textContent = `SCANNING ${pct}%`;
+}
+
+function renderDomResult() {
+  const { dominantSide, leftPct, rightPct, breakdown, confidence } = S.dom.result;
+  const isL = dominantSide === 'LEFT';
+
+  const confLabel = confidence < 8 ? 'Low confidence — faces balanced'
+    : confidence < 18 ? 'Moderate confidence'
+    : 'High confidence';
+
+  const insightMap = {
+    LEFT: `Your <strong>left side</strong> shows measurably higher neuromuscular activity across brow, mouth, and cheek regions during passive observation. Long-term asymmetric muscle use on the dominant side progressively strengthens those muscles, pulling soft tissue and skin slightly toward that side — a primary mechanism of acquired facial asymmetry. The weaker (right) side may benefit from unilateral resistance training.`,
+    RIGHT: `Your <strong>right side</strong> is the dominant neuromuscular side — showing greater micro-movement velocity across key expression regions. This chronic dominance gradually hypertrophies right-side facial muscles, contributing to rightward soft-tissue pull and the specific asymmetries detected in the Eye and Brow analysis above. Target left-side activation in the corrective routine.`,
+  };
+
+  const fmt3 = v => (v * 1000).toFixed(2); // convert to "micro-units" for readability
+  const maxB = Math.max(breakdown.brow.L, breakdown.brow.R, 0.001);
+  const maxM = Math.max(breakdown.mouth.L, breakdown.mouth.R, 0.001);
+  const maxC = Math.max(breakdown.cheek.L, breakdown.cheek.R, 0.001);
+  const maxE = Math.max(breakdown.eye.L, breakdown.eye.R, 0.001);
+
+  function actRow(label, lv, rv, max) {
+    const lp2 = Math.round((lv/max)*100), rp2 = Math.round((rv/max)*100);
+    return `<div class="dom-act-row">
+      <span class="dom-act-name">${label}</span>
+      <div style="flex:1;display:flex;flex-direction:column;gap:3px">
+        <div class="dom-act-track"><div class="dom-act-fill" style="width:${lp2}%;background:var(--cyan)"></div></div>
+        <div class="dom-act-track"><div class="dom-act-fill" style="width:${rp2}%;background:var(--violet)"></div></div>
+      </div>
+      <div class="dom-act-vals">
+        <span style="color:var(--cyan)">${fmt3(lv)}</span>
+        <span style="color:var(--muted)">/</span>
+        <span style="color:var(--violet)">${fmt3(rv)}</span>
+      </div>
+    </div>`;
+  }
+
+  document.getElementById('dom-body').innerHTML = `
+    <div class="dom-result">
+      <div class="dom-side-wrap">
+        <div class="dom-side-card ${isL ? 'dominant' : ''}">
+          <div class="dom-side-label">${isL ? '▲ DOMINANT' : 'RECESSIVE'}</div>
+          <div class="dom-side-name">LEFT</div>
+          <div class="dom-side-score">${leftPct}% activity</div>
+        </div>
+        <div class="dom-side-card ${!isL ? 'dominant' : ''}">
+          <div class="dom-side-label">${!isL ? '▲ DOMINANT' : 'RECESSIVE'}</div>
+          <div class="dom-side-name">RIGHT</div>
+          <div class="dom-side-score">${rightPct}% activity</div>
+        </div>
+      </div>
+
+      <div style="font-size:9px;color:var(--muted);font-family:'DM Mono',monospace;letter-spacing:0.06em">
+        ${confLabel} · Δ${confidence}pts · 180 frames · <span style="color:var(--cyan)">L</span> vs <span style="color:var(--violet)">R</span>
+      </div>
+
+      <div class="dom-activity-bars">
+        ${actRow('Brow',  breakdown.brow.L,  breakdown.brow.R,  maxB)}
+        ${actRow('Mouth', breakdown.mouth.L, breakdown.mouth.R, maxM)}
+        ${actRow('Cheek', breakdown.cheek.L, breakdown.cheek.R, maxC)}
+        ${actRow('Eye',   breakdown.eye.L,   breakdown.eye.R,   maxE)}
+      </div>
+
+      <div class="dom-insight">${insightMap[dominantSide]}</div>
+
+      <button class="dom-recal-btn" onclick="resetDominantScan()">↺ RESCAN</button>
+    </div>`;
+
+  document.getElementById('dom-badge').textContent = `${dominantSide} DOMINANT`;
+}
+
+function resetDominantScan() {
+  S.dom.done = false;
+  S.dom.collecting = false;
+  S.dom.frames = [];
+  S.dom.result = null;
+  document.getElementById('dom-body').innerHTML = `<div class="empty">Starting new scan…</div>`;
+  document.getElementById('dom-badge').textContent = 'PASSIVE SCAN';
+}
+window.resetDominantScan = resetDominantScan;
+
+function updateDomCard() {
+  // Called every frame — only shows calibrating UI if actively scanning
+  // Full render handled by finalizeDominantSide / renderDomResult
+  if (!S.dom.collecting && !S.dom.done && S.on) {
+    // trigger start
+    S.dom.collecting = true;
+    renderDomCalibrating(0);
+  }
+}
+
+// ══════════════════════════════════════
+//  FEATURE 4 — HEAD POSE + POSTURE ENGINE
+// ══════════════════════════════════════
+
+function computeHeadPose(lm, W, H) {
+  const g = i => lp(lm, i, W, H);
+
+  // ── Roll: angle of the line between both eye corners ──
+  const lEyeC = g(IDX.LE_OUT);
+  const rEyeC = g(IDX.RE_OUT);
+  let roll = 0;
+  if (lEyeC && rEyeC) {
+    roll = Math.atan2(lEyeC.y - rEyeC.y, lEyeC.x - rEyeC.x) * 180 / Math.PI;
+    // Normalize: mirrored video, so flip sign
+    roll = -roll;
+  }
+
+  // ── Yaw: ratio of left vs right half of face ──
+  // Measured as nose tip x relative to midpoint of outer eye corners
+  const nosePt   = g(IDX.NOSE_TIP);
+  const foreheadPt = g(IDX.FOREHEAD);
+  const chinPt   = g(IDX.CHIN);
+  const lCheekPt = g(IDX.L_CHEEK);
+  const rCheekPt = g(IDX.R_CHEEK);
+
+  let yaw = 0;
+  if (nosePt && lCheekPt && rCheekPt) {
+    const faceMidX = (lCheekPt.x + rCheekPt.x) / 2;
+    const faceW2   = Math.abs(lCheekPt.x - rCheekPt.x);
+    // Normalize offset to [-45, 45] degrees range
+    yaw = ((nosePt.x - faceMidX) / (faceW2 * 0.5)) * 40;
+    yaw = -yaw; // mirror correction
+  }
+
+  // ── Pitch: vertical angle — nose tip Y relative to eye-chin axis ──
+  let pitch = 0;
+  if (nosePt && foreheadPt && chinPt) {
+    const faceH2 = Math.abs(chinPt.y - foreheadPt.y);
+    const midY   = (foreheadPt.y + chinPt.y) / 2;
+    pitch = ((nosePt.y - midY) / (faceH2 * 0.5)) * 30;
+  }
+
+  // ── Forward Head Posture (FHP) proxy ──
+  // Estimated from face scale vs expected: larger apparent face = head closer/more forward
+  // Also from chin-to-neck angle if shoulders visible
+  // We use pitch + face scale ratio as proxy
+  const faceScaleRatio = lCheekPt && rCheekPt ? Math.abs(lCheekPt.x - rCheekPt.x) / W : 0.3;
+  // FHP index: 0 = ideal, 100 = severe forward head
+  // Elevated pitch (chin up) + large face scale suggests forward lean
+  const rawFHP = Math.max(0, (pitch * 1.5) + (faceScaleRatio - 0.25) * 200);
+  const fhp = Math.min(100, Math.max(0, rawFHP));
+
+  // ── Lateral tilt (same as roll but named for posture context) ──
+  const tilt = roll;
+
+  // ── Smooth all values with EMA ──
+  const p = S.pose;
+  const a = p.ALPHA;
+  p.smoothYaw   = p.smoothYaw   * (1-a) + yaw   * a;
+  p.smoothPitch = p.smoothPitch * (1-a) + pitch * a;
+  p.smoothRoll  = p.smoothRoll  * (1-a) + roll  * a;
+  p.smoothFHP   = p.smoothFHP   * (1-a) + fhp   * a;
+  p.smoothTilt  = p.smoothTilt  * (1-a) + tilt  * a;
+  p.frameCount++;
+
+  return {
+    yaw:   p.smoothYaw,
+    pitch: p.smoothPitch,
+    roll:  p.smoothRoll,
+    fhp:   p.smoothFHP,
+    tilt:  p.smoothTilt,
+    raw:   { yaw, pitch, roll, fhp },
+  };
+}
+
+function updatePoseCard(pose, faceData) {
+  if (!pose) return;
+
+  const { yaw, pitch, roll, fhp } = pose;
+
+  // Classify severity
+  const yawSev   = Math.abs(yaw)   < 5 ? 'ok' : Math.abs(yaw)   < 12 ? 'warn' : 'bad';
+  const pitchSev = Math.abs(pitch) < 5 ? 'ok' : Math.abs(pitch) < 12 ? 'warn' : 'bad';
+  const rollSev  = Math.abs(roll)  < 3 ? 'ok' : Math.abs(roll)  < 7  ? 'warn' : 'bad';
+  const fhpSev   = fhp < 20 ? 'ok' : fhp < 50 ? 'warn' : 'bad';
+
+  const colorOf = s => s === 'ok' ? 'var(--green)' : s === 'warn' ? 'var(--amber)' : 'var(--red)';
+  const clsOf   = s => `pose-${s}`;
+
+  // Alert banners
+  let banners = '';
+  if (Math.abs(yaw) > 8) {
+    banners += `<div class="pose-warn-banner">⚠ Head rotated ${Math.abs(yaw).toFixed(1)}° ${yaw > 0 ? 'right' : 'left'} — symmetry metrics may be skewed. Face the camera directly.</div>`;
+  }
+  if (Math.abs(roll) > 6) {
+    banners += `<div class="pose-warn-banner">⚠ Head tilted ${Math.abs(roll).toFixed(1)}° — leveling your head will improve measurement accuracy.</div>`;
+  }
+  if (fhp > 45) {
+    banners += `<div class="pose-alert-banner">⚠ Significant forward head posture detected (${fhp.toFixed(0)}%). This directly stresses the SCM and suboccipital muscles, a key driver of facial asymmetry.</div>`;
+  }
+
+  // Posture-to-face links
+  const links = [];
+
+  if (Math.abs(roll) > 3) {
+    const tiltSide = roll > 0 ? 'right' : 'left';
+    links.push({
+      icon: '🔗',
+      text: `<strong style="color:var(--text2)">Head tilt → brow asymmetry:</strong> Your ${Math.abs(roll).toFixed(1)}° ${tiltSide} tilt chronically shortens the ipsilateral SCM and scalene muscles, elevating that side's temporal attachment and pulling the eyebrow and orbital rim upward. This directly explains detected brow height differences.`
+    });
+  }
+
+  if (fhp > 20) {
+    links.push({
+      icon: '🔗',
+      text: `<strong style="color:var(--text2)">Forward head posture → jaw asymmetry:</strong> FHP index ${fhp.toFixed(0)}% — forward head position forces mandibular retraction and often a compensatory head rotation toward the dominant chewing side. This contributes to jaw arch asymmetry (Δ${faceData ? Math.abs(faceData.lJD - faceData.rJD).toFixed(1) : '--'}mm detected).`
+    });
+  }
+
+  if (Math.abs(yaw) > 5) {
+    links.push({
+      icon: '🔗',
+      text: `<strong style="color:var(--text2)">Habitual head rotation → midline deviation:</strong> Chronic ${Math.abs(yaw).toFixed(1)}° yaw toward the ${yaw > 0 ? 'right' : 'left'} asymmetrically loads cervical rotators. Over time this produces compensatory nasal midline deviation toward the rotated side — consistent with the ${faceData && Math.abs(faceData.midlineOffset) > 1 ? faceData.midlineOffset.toFixed(1)+'mm offset' : 'midline data'} detected.`
+    });
+  }
+
+  if (Math.abs(pitch) > 8) {
+    links.push({
+      icon: '🔗',
+      text: `<strong style="color:var(--text2)">Chin position → lip and mouth asymmetry:</strong> Elevated chin angle of ${Math.abs(pitch).toFixed(1)}° elongates one side of the digastric triangle and alters resting lip position. This can manifest as the mouth corner vertical difference detected in Facial Geometry.`
+    });
+  }
+
+  if (!links.length) {
+    links.push({
+      icon: '✓',
+      text: `<strong style="color:var(--green)">No posture-driven asymmetry factors detected.</strong> Head pose is well-centered. Existing facial asymmetry appears to be structural or habitual in origin rather than posture-driven.`
+    });
+  }
+
+  // FHP bar
+  const fhpPct = Math.min(fhp, 100);
+  const fhpColor = colorOf(fhpSev);
+
+  // Pose badge text
+  const overallOk = yawSev === 'ok' && rollSev === 'ok' && fhpSev === 'ok';
+  const overallBad = fhpSev === 'bad' || yawSev === 'bad' || rollSev === 'bad';
+  document.getElementById('pose-badge').textContent = overallOk ? 'OPTIMAL' : overallBad ? 'ALERT' : 'REVIEW';
+  document.getElementById('pose-badge').style.color = overallOk ? 'var(--green)' : overallBad ? 'var(--red)' : 'var(--amber)';
+
+  document.getElementById('pose-body').innerHTML = `
+    ${banners}
+
+    <div class="pose-grid">
+      <div class="pose-tile">
+        <div class="pose-tile-label">Yaw (Turn)</div>
+        <div class="pose-tile-val ${clsOf(yawSev)}">${yaw > 0 ? '+' : ''}${yaw.toFixed(1)}°</div>
+        <div class="pose-tile-unit">${Math.abs(yaw) < 3 ? 'Centered' : yaw > 0 ? 'Rotated right' : 'Rotated left'}</div>
+      </div>
+      <div class="pose-tile">
+        <div class="pose-tile-label">Roll (Tilt)</div>
+        <div class="pose-tile-val ${clsOf(rollSev)}">${roll > 0 ? '+' : ''}${roll.toFixed(1)}°</div>
+        <div class="pose-tile-unit">${Math.abs(roll) < 2 ? 'Level' : roll > 0 ? 'Tilted right' : 'Tilted left'}</div>
+      </div>
+      <div class="pose-tile">
+        <div class="pose-tile-label">Pitch (Nod)</div>
+        <div class="pose-tile-val ${clsOf(pitchSev)}">${pitch > 0 ? '+' : ''}${pitch.toFixed(1)}°</div>
+        <div class="pose-tile-unit">${Math.abs(pitch) < 3 ? 'Neutral' : pitch > 0 ? 'Chin down' : 'Chin up'}</div>
+      </div>
+      <div class="pose-tile">
+        <div class="pose-tile-label">FHP Index</div>
+        <div class="pose-tile-val ${clsOf(fhpSev)}">${fhp.toFixed(0)}%</div>
+        <div class="pose-tile-unit">${fhp < 20 ? 'Ideal' : fhp < 50 ? 'Moderate' : 'Significant'}</div>
+      </div>
+    </div>
+
+    <div class="pose-bar-section">
+      <div class="pose-bar-label">
+        <span>Forward Head Posture (FHP)</span>
+        <span style="color:${fhpColor};font-family:'DM Mono',monospace;font-size:9px">${fhp.toFixed(0)}%</span>
+      </div>
+      <div class="pose-bar-track">
+        <div class="pose-bar-fill" style="width:${fhpPct}%;background:${fhpColor}"></div>
+      </div>
+    </div>
+
+    <div style="font-size:9px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;display:flex;align-items:center;gap:6px">
+      <span style="width:3px;height:10px;background:var(--gold);border-radius:2px;display:inline-block;box-shadow:0 0 6px var(--gold)"></span>
+      Asymmetry Linkage
+    </div>
+    <div class="pose-link-wrap">
+      ${links.map(l => `<div class="pose-link-item"><span class="pose-link-icon">${l.icon}</span><span>${l.text}</span></div>`).join('')}
+    </div>
+  `;
+}
+function setCamUI(on) {
+  const dot = document.getElementById('dot-cam');
+  const pill = document.getElementById('pill-cam');
+  const txt = document.getElementById('txt-cam');
+  const btn = document.getElementById('btn-cam');
+  if (on) {
+    dot.className = 'dot on';
+    pill.className = 'status-pill on';
+    txt.textContent = 'ACTIVE';
+    btn.className = 'btn btn-stop';
+    btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="4" width="4" height="16" rx="1"/><rect x="15" y="4" width="4" height="16" rx="1"/></svg> STOP CAMERA`;
+  } else {
+    dot.className = 'dot';
+    pill.className = 'status-pill';
+    txt.textContent = 'OFFLINE';
+    btn.className = 'btn btn-primary';
+    btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg> ACTIVATE CAMERA`;
+  }
+}
+
+function setTrackUI(on) {
+  const dot = document.getElementById('dot-track');
+  const pill = document.getElementById('pill-track');
+  const txt = document.getElementById('txt-track');
+  if (on) {
+    dot.className = 'dot tracking';
+    pill.className = 'status-pill tracking';
+    txt.textContent = 'TRACKING';
+  } else {
+    dot.className = 'dot warning';
+    pill.className = 'status-pill';
+    txt.textContent = 'NO FACE';
+  }
+}
+
+function setBrackets(on) {
+  ['br-tl','br-tr','br-bl','br-br'].forEach(id => {
+    document.getElementById(id).classList.toggle('show', on);
+  });
+}
+
+function resetCards() {
+  const wait = `<div class="shimmer-bar"><div class="shimmer-fill"></div></div><div class="empty">No face in frame</div>`;
+  ['eye-body','brow-body','geo-body'].forEach(id => document.getElementById(id).innerHTML = wait);
+  ['cause-body','routine-body','groom-body'].forEach(id =>
+    document.getElementById(id).innerHTML = `<div class="empty">Capture a face to view suggestions</div>`);
+
+  // Reset new feature cards
+  document.getElementById('dom-body').innerHTML = `<div class="empty">Activate camera to begin passive scan</div>`;
+  document.getElementById('dom-badge').textContent = 'PASSIVE SCAN';
+  document.getElementById('pose-body').innerHTML = `<div class="empty">Activate camera to analyze</div>`;
+  document.getElementById('pose-badge').textContent = 'HEAD POSE';
+  document.getElementById('pose-badge').style.color = 'var(--muted)';
+
+  document.getElementById('score-num').textContent = '--';
+  document.getElementById('score-num').style.color = 'var(--cyan)';
+  document.getElementById('score-verdict').innerHTML = 'Ready for<br/>Analysis';
+  document.getElementById('score-note').textContent = 'Activate camera and position your face in frame';
+  const arc = document.getElementById('score-arc');
+  arc.style.strokeDashoffset = '213.6';
+  arc.style.stroke = 'var(--cyan)';
+}
+
+// ══════════════════════════════════════
+//  FILTER
+// ══════════════════════════════════════
+function setFilter(f) {
+  S.filter = f;
+  document.querySelectorAll('.fchip').forEach(el =>
+    el.classList.toggle('active', el.dataset.f === f));
+}
+window.setFilter = setFilter;
+
+// ══════════════════════════════════════
+//  SNAPSHOT
+// ══════════════════════════════════════
+function doSnap() {
+  const snap = document.createElement('canvas');
+  snap.width = MESH_C.width; snap.height = MESH_C.height;
+  const ctx = snap.getContext('2d');
+  // Draw mirrored video
+  ctx.save(); ctx.scale(-1,1);
+  ctx.drawImage(VIDEO, 0, 0, -snap.width, snap.height);
+  ctx.restore();
+  // Overlay mesh
+  ctx.drawImage(MESH_C, 0, 0);
+  const a = document.createElement('a');
+  a.download = `symmetra-${Date.now()}.png`;
+  a.href = snap.toDataURL('image/png');
+  a.click();
+}
+window.doSnap = doSnap;
+
+// ══════════════════════════════════════
+//  CLEANUP
+// ══════════════════════════════════════
+window.addEventListener('beforeunload', () => {
+  if (S.stream) S.stream.getTracks().forEach(t => t.stop());
+  if (S.mpCam) try { S.mpCam.stop(); } catch(e) {}
+});
+</script>
+</body>
+</html>
